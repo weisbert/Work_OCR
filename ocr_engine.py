@@ -98,7 +98,7 @@ class OCREngine:
         for item in items:
             bbox, text_score = item
             text, score = text_score
-            results.append((bbox, str(text), float(score)))
+            results.append((bbox, (str(text), float(score))))
 
         self._log_info(f"OCR recognize finished in {elapsed:.3f}s, {len(results)} items")
         if not results:

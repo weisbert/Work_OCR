@@ -67,6 +67,12 @@ def test_capture_simulation(app_instance, qtbot):
 
     and verifying the emitted signal's pixmap size.
 
+    
+
+    Note: On high-DPI displays, the captured pixmap size is in physical pixels,
+
+    which is the logical size multiplied by devicePixelRatio.
+
     """
 
     widget = CaptureWindow()
@@ -77,13 +83,13 @@ def test_capture_simulation(app_instance, qtbot):
 
 
 
-    # Define the capture area
+    # Define the capture area (logical pixels)
 
     start_pos = QPoint(50, 50)
 
     end_pos = QPoint(150, 150)
 
-    expected_rect = QRect(start_pos, end_pos)
+    logical_rect = QRect(start_pos, end_pos)
 
     
 
@@ -109,7 +115,15 @@ def test_capture_simulation(app_instance, qtbot):
 
     assert not captured_pixmap.isNull()
 
-    assert captured_pixmap.rect().size() == expected_rect.size()
+    
+
+    # On high-DPI displays, the physical pixmap size should be scaled by devicePixelRatio
+
+    dpr = captured_pixmap.devicePixelRatio()
+
+    expected_physical_size = logical_rect.size() * dpr
+
+    assert captured_pixmap.rect().size() == expected_physical_size
 
 
 

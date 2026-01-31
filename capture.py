@@ -17,10 +17,16 @@ class CaptureWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
 
-        screen_geometry = QGuiApplication.primaryScreen().geometry()
-        self.setGeometry(screen_geometry)
+        # 获取主屏幕信息和虚拟几何
+        self._screen = QGuiApplication.primaryScreen()
+        
+        # 使用虚拟几何设置窗口大小，支持多显示器
+        virtual_geometry = self._screen.virtualGeometry()
+        self.setGeometry(virtual_geometry)
 
-        self._background_pixmap = QGuiApplication.primaryScreen().grabWindow(0)
+        # 捕获整个虚拟桌面
+        self._background_pixmap = self._screen.grabWindow(0)
+        
         self._is_selecting = False
         self._start_point = None
         self._end_point = None
@@ -56,7 +62,16 @@ class CaptureWindow(QWidget):
 
             capture_rect = self.get_normalized_selection()
             if capture_rect.isValid():
-                captured_pixmap = self._background_pixmap.copy(capture_rect)
+                # 使用背景图片的 devicePixelRatio 进行坐标转换
+                # 这对于支持高 DPI 显示器和测试环境都很重要
+                dpr = self._background_pixmap.devicePixelRatio()
+                physical_rect = QRect(
+                    int(capture_rect.x() * dpr),
+                    int(capture_rect.y() * dpr),
+                    int(capture_rect.width() * dpr),
+                    int(capture_rect.height() * dpr)
+                )
+                captured_pixmap = self._background_pixmap.copy(physical_rect)
                 self.screenshot_completed.emit(captured_pixmap)
             event.accept()
 

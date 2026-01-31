@@ -39,8 +39,9 @@ class TestOCREngine(unittest.TestCase):
 
         for item in results:
             self.assertIsInstance(item, tuple)
-            self.assertEqual(len(item), 3)
-            bbox, text, score = item
+            self.assertEqual(len(item), 2)
+            bbox, text_score = item
+            text, score = text_score
 
             self.assertIsInstance(bbox, list)
             self.assertEqual(len(bbox), 4)

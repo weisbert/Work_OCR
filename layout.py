@@ -4,6 +4,7 @@ This module provides functionalities for layout reconstruction from OCR results.
 It can reconstruct text into a structured table (TSV) or plain text with layout preservation.
 """
 
+import re
 from typing import List, Tuple, Dict, Any, Union
 
 # Define a type for a single OCR item, which includes the bounding box, text, and score.
@@ -237,3 +238,100 @@ def reconstruct_text(ocr_result: OcrResult, space_width_ratio: float = 0.5) -> s
         output_lines.append(line_str)
 
     return "\n".join(output_lines)
+
+
+def post_process_text(text: str) -> str:
+    """
+    对识别结果进行基础后处理，修复通用的 OCR 识别问题。
+    
+    仅处理最通用的文本模式：
+    1. Markdown 标题和内容之间缺少空格
+    2. 标点后缺少空格（冒号、逗号、分号）
+    
+    Args:
+        text: 原始识别文本
+        
+    Returns:
+        后处理后的文本
+    """
+    # 1. Markdown 标题后加空格：###Key -> ### Key
+    text = re.sub(r'(#{1,6})([^\s#])', r'\1 \2', text)
+    
+    # 2. 冒号后加空格（非 URL 场景）：mode:outputs -> mode: outputs
+    text = re.sub(r'(:)([^\s/])', r'\1 \2', text)
+    
+    # 3. 逗号后加空格：word1,word2 -> word1, word2
+    text = re.sub(r',([^\s])', r', \1', text)
+    
+    # 4. 分号后加空格
+    text = re.sub(r';([^\s])', r'; \1', text)
+    
+    return text
+
+
+def _add_list_markers_by_indent(ocr_result: OcrResult, text: str) -> str:
+    """
+    基于缩进级别自动添加列表标记
+    
+    简单规则：如果某行相对于最左行有明显缩进（超过 2 个字符宽度），
+    且该行没有现有标记，则添加 "- "
+    """
+    if not ocr_result or len(ocr_result) < 2:
+        return text
+    
+    items = [{'text': item[1][0], 'norm_bbox': normalize_bbox(item[0])} 
+             for item in ocr_result]
+    
+    min_x1 = min(it['norm_bbox']['x1'] for it in items)
+    avg_char_w = sum(it['norm_bbox']['w'] / max(len(it['text']), 1) for it in items) / len(items)
+    indent_threshold = avg_char_w * 2
+    
+    lines = text.split('\n')
+    processed_lines = []
+    first_content_found = False
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            processed_lines.append(line)
+            continue
+        
+        # 跳过标题和已有标记的行
+        if stripped.startswith('#') or re.match(r'^[-*+\d]', stripped):
+            processed_lines.append(line)
+            first_content_found = True
+            continue
+        
+        # 查找对应 OCR 项检查缩进
+        matching_item = next((it for it in items if stripped in it['text']), None)
+        
+        if matching_item and first_content_found:
+            if matching_item['norm_bbox']['x1'] > min_x1 + indent_threshold:
+                processed_lines.append('- ' + line)
+                continue
+        
+        processed_lines.append(line)
+        first_content_found = True
+    
+    return '\n'.join(processed_lines)
+
+
+def reconstruct_text_with_postprocess(ocr_result: OcrResult, space_width_ratio: float = 0.5) -> str:
+    """
+    重构文本并应用后处理，提高识别准确度。
+    
+    流程：
+    1. 基础文本重构
+    2. 通用空格修复
+    3. 基于缩进添加列表标记
+    
+    Args:
+        ocr_result: The list of OCR items.
+        space_width_ratio: Ratio of average char width to determine number of spaces.
+        
+    Returns:
+        A string with layout preserved and common OCR errors fixed.
+    """
+    raw_text = reconstruct_text(ocr_result, space_width_ratio)
+    fixed_text = post_process_text(raw_text)
+    return _add_list_markers_by_indent(ocr_result, fixed_text)

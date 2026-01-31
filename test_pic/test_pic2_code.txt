@@ -1,0 +1,6 @@
+### Key Features
+- Screenshot region selection (Snipaste-like interaction)
+- Table mode: outputs TSV format that can be directly pasted into Excel
+- Text mode: preserves layout with line breaks and indentation
+- Table post-processing: threshold replacement, unit conversion, engineering notation conversion
+- Real-time progress display and logging
