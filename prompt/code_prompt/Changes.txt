@@ -1,0 +1,9 @@
+1. 当Notation为none时，preview的结果中不能有科学计数法或者工程计数法的表达
+当我选择Notation为none，同时也勾选了Enable threshold replacement, 也勾选了Enable unit unification时，结果如下
+10u	0E+6u	401.5u	601.6u	1.95E+3u	0E+6u
+28.15u	0E+6u	0E+6u	0.028u	0E+6u	0.0501u
+0E+6u	0.0150u	0E+6u	3.33u	0.1205u	2.5E+3u
+0.45u	0E+6u	0.9999u	1200u	0E+6u	75u
+3.0E+3u	0E+6u	0.06u	0E+6u	8.88u	0E+6u
+
+增加一个选项，用户可以自己定义显示的有效数位是多少

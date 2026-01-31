@@ -141,3 +141,6 @@ cython_debug/
 
 # Temp files
 ~$*.xlsx
+
+# Runtime generated config
+config.json

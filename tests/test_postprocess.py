@@ -90,8 +90,11 @@ class TestPostprocess(unittest.TestCase):
 
     def test_notation_conversions(self):
         val = parse_cell("12345")
-        self.assertEqual(to_scientific(val), "1.2345e+4")
-        self.assertEqual(to_engineering(val), "12.345E+03")
+        # Scientific notation with default precision (6 digits: 1 before + 5 after decimal)
+        self.assertEqual(to_scientific(val), "1.23450E+04")
+        # Engineering notation with default precision (6 digits)
+        # mantissa=12.345 (2 integer digits) + 4 decimal places = 6 total digits
+        self.assertEqual(to_engineering(val), "12.3450E+03")
         
         val2 = parse_cell("0.00123")
         converted_prefix = sci_to_prefix(val2)
@@ -132,7 +135,9 @@ class TestPostprocess(unittest.TestCase):
         )
         tsv_eng_in = "12345"
         tsv_eng_out = process_tsv(tsv_eng_in, settings_eng)
-        self.assertEqual(tsv_eng_out, "12.345E+03")
+        # Default precision is 6 digits
+        # mantissa=12.345 (2 integer digits) + 4 decimal places = 6 total digits
+        self.assertEqual(tsv_eng_out, "12.3450E+03")
         
         settings_thresh = PostprocessSettings(
             apply_threshold=True,

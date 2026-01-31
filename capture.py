@@ -8,8 +8,10 @@ class CaptureWindow(QWidget):
     """
     A semi-transparent window for capturing a region of the screen.
     Emits a 'screenshot_completed' signal with the captured QPixmap when done.
+    Emits a 'screenshot_cancelled' signal when user cancels the capture.
     """
     screenshot_completed = Signal(QPixmap)
+    screenshot_cancelled = Signal()
 
     def __init__(self):
         super().__init__()
@@ -33,8 +35,9 @@ class CaptureWindow(QWidget):
         self._selection_rect = QRect()
 
     def keyPressEvent(self, event):
-        """Close the window when the 'Esc' key is pressed."""
+        """Close the window and emit cancelled signal when the 'Esc' key is pressed."""
         if event.key() == Qt.Key_Escape:
+            self.screenshot_cancelled.emit()
             self.close()
             event.accept()
 
@@ -61,7 +64,7 @@ class CaptureWindow(QWidget):
             self.close()  # Close the capture window
 
             capture_rect = self.get_normalized_selection()
-            if capture_rect.isValid():
+            if capture_rect.isValid() and capture_rect.width() > 5 and capture_rect.height() > 5:
                 # 使用背景图片的 devicePixelRatio 进行坐标转换
                 # 这对于支持高 DPI 显示器和测试环境都很重要
                 dpr = self._background_pixmap.devicePixelRatio()
@@ -73,6 +76,9 @@ class CaptureWindow(QWidget):
                 )
                 captured_pixmap = self._background_pixmap.copy(physical_rect)
                 self.screenshot_completed.emit(captured_pixmap)
+            else:
+                # Selection too small, treat as cancelled
+                self.screenshot_cancelled.emit()
             event.accept()
 
     def paintEvent(self, event):
