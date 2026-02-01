@@ -10,6 +10,7 @@ import sys
 import time
 import tempfile # Moved from on_screenshot_captured
 import os       # Moved from on_screenshot_captured
+import re
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QTabWidget, QProgressBar,
@@ -65,20 +66,19 @@ class OcrWorker(QThread):
 
             # Steps 3-4: Analyze Layout
             update_progress(3, "Analyzing layout...")
-            if self.mode == "auto":
-                detected_mode = layout.detect_mode(ocr_result)
-            else:
-                detected_mode = self.mode
-
-            if detected_mode == "table":
+            if self.mode == "table":
+                detected_mode = "table"
                 layout_result = layout.reconstruct_table(ocr_result)
             else:
+                detected_mode = "default"
                 layout_result = layout.reconstruct_text_with_postprocess(ocr_result)
             layout_time = time.time()
             self.progress.emit(f"Layout analysis finished in {layout_time - ocr_time:.2f}s.", int(4 / total_steps * 100))
 
             # Steps 5-6: Post-process Table
             post_result = ""
+            # Only auto post-process in 'table' mode
+            # In 'default' mode, post-processing is done on-demand when user switches tab
             if detected_mode == 'table':
                 update_progress(5, "Loading post-processor settings...")
                 settings = postprocess.load_config()
@@ -87,7 +87,7 @@ class OcrWorker(QThread):
                 post_time = time.time()
                 self.progress.emit(f"Post-processing finished in {post_time - layout_time:.2f}s.", int(6 / total_steps * 100))
             else:
-                update_progress(6, "Skipping post-processing (not a table).")
+                update_progress(6, "Skipping auto post-processing in default mode.")
 
             # Steps 7-8: Finalize
             update_progress(7, "Finalizing results...")
@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self.copy_button = QPushButton("Copy")
         self.clear_button = QPushButton("Clear")
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Auto", "Table", "Text"])
+        self.mode_combo.addItems(["Default", "Table"])
         
         # Hotkey setting
         self.hotkey_input = QLineEdit()
@@ -245,13 +245,15 @@ class MainWindow(QMainWindow):
         # Row 3: Copy Strategy and Buttons
         self.copy_strategy_combo = QComboBox()
         self.copy_strategy_combo.addItems(["Copy All", "Copy Values Only", "Copy Units Only"])
+        self.generate_button = QPushButton("Generate Preview")
         self.apply_button = QPushButton("Apply & Save Settings")
         self.reset_button = QPushButton("Reset to Default")
         
         control_layout.addWidget(QLabel("Copy Strategy:"), 3, 0)
         control_layout.addWidget(self.copy_strategy_combo, 3, 1, 1, 2)
-        control_layout.addWidget(self.apply_button, 3, 3)
-        control_layout.addWidget(self.reset_button, 3, 4)
+        control_layout.addWidget(self.generate_button, 3, 3)
+        control_layout.addWidget(self.apply_button, 3, 4)
+        control_layout.addWidget(self.reset_button, 3, 5)
         
         # Set column stretch
         control_layout.setColumnStretch(2, 1)
@@ -278,6 +280,7 @@ class MainWindow(QMainWindow):
         self.hotkey_mgr.screenshot_hotkey_pressed.connect(self.on_hotkey_screenshot)
         
         # Post-processing control signals
+        self.generate_button.clicked.connect(self.on_generate_postprocess)
         self.apply_button.clicked.connect(self.on_apply_postprocess_settings)
         self.reset_button.clicked.connect(self.on_reset_postprocess_settings)
         
@@ -397,15 +400,11 @@ class MainWindow(QMainWindow):
         self.ocr_result_text.setPlainText(layout_result)
         self.postprocessed_text.setPlainText(post_result)
 
-        if self.mode_combo.currentText().lower() == 'auto':
-            if detected_mode == 'table':
-                self.mode_combo.setCurrentIndex(1)  # "Table"
-            else:
-                self.mode_combo.setCurrentIndex(2)  # "Text"
-
-        if detected_mode == 'table' and post_result:
-            self.tabs.setCurrentIndex(1)
+        # Tab switching logic: only auto-switch in "table" mode
+        if self.mode_combo.currentText().lower() == 'table' and post_result:
+            self.tabs.setCurrentIndex(1)  # Switch to Post-processed tab
         else:
+            # In "default" mode, stay on OCR Result tab (index 0)
             self.tabs.setCurrentIndex(0)
 
     @Slot(str)
@@ -487,7 +486,7 @@ class MainWindow(QMainWindow):
         self.postprocessed_text.clear()
         self.original_ocr_result = ""  # Clear stored OCR result
         self.progress_bar.setValue(0)
-        self.mode_combo.setCurrentIndex(0)  # Reset to "Auto"
+        # Note: We don't reset mode_combo here to preserve user's mode selection
 
     # ========== Hotkey Methods ==========
 
@@ -655,25 +654,45 @@ class MainWindow(QMainWindow):
         """Update the post-process preview based on current settings and original OCR result."""
         if not self.original_ocr_result:
             return
-        
+
         settings = self.get_settings_from_ui()
         self.current_settings = settings
-        
-        # Only process if it's a table (contains tabs)
-        if '\t' in self.original_ocr_result:
-            try:
-                processed = postprocess.process_tsv(self.original_ocr_result, settings)
-                self.postprocessed_text.setPlainText(processed)
-            except Exception as e:
-                self.log_text.appendPlainText(f"Post-processing preview error: {e}")
-        else:
-            # For text mode, just show original
+
+        # Sanitize input from 'Default' mode before post-processing
+        input_text = self.original_ocr_result
+        current_mode = self.mode_combo.currentText().lower()
+        if current_mode == 'default':
+            # Replace multiple spaces with a single tab to create a TSV-like structure
+            input_text = "\n".join([re.sub(r' +', '\t', line).strip() for line in input_text.splitlines()])
+
+        # Always try to process the result (user can view preview on-demand)
+        try:
+            processed = postprocess.process_tsv(input_text, settings)
+            self.postprocessed_text.setPlainText(processed)
+        except Exception as e:
+            # If processing fails, show original with a note
+            self.log_text.appendPlainText(f"Post-processing preview error: {e}")
             self.postprocessed_text.setPlainText(self.original_ocr_result)
 
     @Slot()
     def on_postprocess_changed(self):
         """Handle any post-processing control change - update preview in real-time."""
         self.update_postprocess_preview()
+
+    @Slot()
+    def on_generate_postprocess(self):
+        """Manually trigger post-processing preview generation.
+        
+        This is useful in 'default' mode where auto post-processing is skipped.
+        In 'table' mode, this re-generates the preview with current settings.
+        """
+        if not self.original_ocr_result:
+            self.log_text.appendPlainText("No OCR result to process. Please take a screenshot first.")
+            return
+        
+        self.log_text.appendPlainText("Generating post-process preview...")
+        self.update_postprocess_preview()
+        self.log_text.appendPlainText("Post-process preview generated.")
 
     @Slot()
     def on_apply_postprocess_settings(self):
