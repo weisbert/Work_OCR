@@ -14,9 +14,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtCore import Qt # Needed for QPixmap.isNull()
 
-# Ensure the app module can be found
-sys.path.insert(0, '.')
-from app import MainWindow, OcrWorker
+from work_ocr.app import MainWindow, OcrWorker
 
 class TestAppLogic(unittest.TestCase):
     """

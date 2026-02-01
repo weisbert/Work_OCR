@@ -3,10 +3,7 @@ import unittest
 import os
 import sys
 
-# Add project root to the Python path to allow importing 'layout'
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from layout import (
+from work_ocr.layout import (
     normalize_bbox,
     detect_mode,
     reconstruct_table,

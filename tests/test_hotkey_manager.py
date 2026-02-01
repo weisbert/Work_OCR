@@ -5,10 +5,7 @@ import unittest
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from hotkey_manager import HotkeyManager
+from work_ocr.hotkey_manager import HotkeyManager
 
 
 class TestHotkeyManager(unittest.TestCase):

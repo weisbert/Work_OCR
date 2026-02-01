@@ -1,7 +1,12 @@
 # manual_test.py
 from pathlib import Path
 from pprint import pprint
-from ocr_engine import OCREngine
+import sys
+from pathlib import Path
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from work_ocr.ocr_engine import OCREngine
 
 def run_manual_test():
     """
@@ -9,7 +14,7 @@ def run_manual_test():
     and see the formatted output.
     """
     # 1. Define the input image path
-    image_path = Path("test_pic") / "test_pic1_data_table.png"
+    image_path = Path(__file__).parent.parent / "assets" / "test_images" / "test_pic1_data_table.png"
     if not image_path.exists():
         print(f"Error: Test image not found at '{image_path}'")
         return

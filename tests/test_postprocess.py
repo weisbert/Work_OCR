@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 from decimal import Decimal
-from postprocess import (
+from work_ocr.postprocess import (
     parse_cell,
     apply_threshold,
     convert_unit,

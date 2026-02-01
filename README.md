@@ -56,7 +56,12 @@ pip install -r requirements.txt
 ### 启动应用
 
 ```bash
-python app.py
+# 方法1: 作为模块运行
+python -m work_ocr
+
+# 方法2: 安装后使用入口命令
+pip install -e .
+work-ocr
 ```
 
 ### 基本操作
@@ -109,14 +114,16 @@ python app.py
 
 ```
 Work_OCR/
-├── app.py                  # 主应用程序入口
-├── capture.py              # 截图功能模块
-├── ocr_engine.py           # PaddleOCR 封装
-├── layout.py               # 布局分析（表格/文本重建）
-├── postprocess.py          # 表格后处理
-├── hotkey_manager.py       # 全局热键管理
-├── requirements.txt        # Python 依赖
-├── config.json             # 用户配置文件（自动生成）
+├── src/
+│   └── work_ocr/           # 主程序包
+│       ├── __init__.py
+│       ├── __main__.py     # 模块入口
+│       ├── app.py          # 主应用程序
+│       ├── capture.py      # 截图功能
+│       ├── ocr_engine.py   # PaddleOCR 封装
+│       ├── layout.py       # 布局分析
+│       ├── postprocess.py  # 表格后处理
+│       └── hotkey_manager.py  # 全局热键管理
 │
 ├── tests/                  # 单元测试
 │   ├── test_app.py
@@ -127,15 +134,25 @@ Work_OCR/
 │   ├── test_ocr_accuracy.py
 │   └── test_postprocess.py
 │
-├── test_pic/               # 测试图片
-│   ├── test_pic1_data_table.png
-│   ├── test_pic1_data_table_anwser.txt
-│   ├── test_pic2_code.png
-│   └── current_data.xlsx
+├── scripts/                # 工具脚本
+│   └── manual_test.py      # 手动测试脚本
 │
-└── prompt/                 # 需求文档
-    ├── needs.txt           # 产品需求文档
-    └── code_prompt/        # 代码提示文档
+├── assets/                 # 资源文件
+│   └── test_images/        # 测试图片
+│       ├── test_pic1_data_table.png
+│       ├── test_pic1_data_table_anwser.txt
+│       ├── test_pic2_code.png
+│       └── current_data.xlsx
+│
+├── docs/                   # 文档
+│   └── prompt/             # 需求文档
+│       ├── needs.txt
+│       └── code_prompt/
+│
+├── pyproject.toml          # 项目配置
+├── requirements.txt        # Python 依赖
+├── config.json             # 用户配置（运行时生成）
+└── README.md
 ```
 
 ## 运行测试

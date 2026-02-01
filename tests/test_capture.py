@@ -13,13 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 
 
-# Add the parent directory to the path to allow module imports
-
-sys.path.insert(0, '.')
-
-
-
-from capture import CaptureWindow
+from work_ocr.capture import CaptureWindow
 
 
 

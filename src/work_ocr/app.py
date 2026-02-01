@@ -20,11 +20,11 @@ from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QPixmap, QGuiApplication
 
 # Import project modules
-import capture
-import ocr_engine
-import layout
-import postprocess
-import hotkey_manager
+from . import capture
+from . import ocr_engine
+from . import layout
+from . import postprocess
+from . import hotkey_manager
 
 
 class OcrWorker(QThread):
@@ -718,8 +718,13 @@ class MainWindow(QMainWindow):
         
         event.accept()
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the Work OCR application."""
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

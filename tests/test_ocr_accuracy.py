@@ -2,15 +2,12 @@
 """
 测试 OCR 识别准确度 - 比较识别结果与预期文本的差异
 """
-import sys
 import difflib
 import re
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from ocr_engine import OCREngine
-from layout import reconstruct_text, reconstruct_text_with_postprocess, post_process_text
+from work_ocr.ocr_engine import OCREngine
+from work_ocr.layout import reconstruct_text, reconstruct_text_with_postprocess, post_process_text
 
 
 class TestOCRAccuracy:
@@ -19,8 +16,9 @@ class TestOCRAccuracy:
     @classmethod
     def setup_class(cls):
         """设置测试类"""
-        cls.image_path = Path("test_pic") / "test_pic2_code.png"
-        cls.expected_path = Path("test_pic") / "test_pic2_code.txt"
+        assets_dir = Path(__file__).parent.parent / "assets" / "test_images"
+        cls.image_path = assets_dir / "test_pic2_code.png"
+        cls.expected_path = assets_dir / "test_pic2_code.txt"
         cls.expected_text = cls._load_expected_text()
         
         # 如果图片存在，进行 OCR 识别

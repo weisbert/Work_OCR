@@ -9,13 +9,13 @@ os.environ.setdefault("FLAGS_enable_onednn", "0")
 os.environ.setdefault("FLAGS_enable_pir_api", "0")
 os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
 
-from ocr_engine import OCREngine
+from work_ocr.ocr_engine import OCREngine
 
 
 class TestOCREngine(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.image_path = Path("test_pic") / "test_pic1_data_table.png"
+        cls.image_path = Path(__file__).parent.parent / "assets" / "test_images" / "test_pic1_data_table.png"
         cls.logger = logging.getLogger("ocr_engine_test")
         cls.logger.setLevel(logging.INFO)
 
