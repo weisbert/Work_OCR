@@ -7,12 +7,6 @@ Usage:
 """
 
 import sys
-import signal
-
-# Fix Ctrl+C on Windows - must be done before importing paddle
-if sys.platform == "win32":
-    signal.signal(signal.SIGINT, signal.default_int_handler)
-
 from .app import main
 
 if __name__ == "__main__":

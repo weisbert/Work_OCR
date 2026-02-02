@@ -75,7 +75,6 @@ class TestOCRAccuracy:
     
     def test_post_process_basic_rules(self):
         """测试后处理的基础通用规则"""
-        from layout import post_process_text
         
         # 只测试最基础的通用规则
         test_cases = [

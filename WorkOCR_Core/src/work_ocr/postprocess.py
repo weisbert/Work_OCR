@@ -59,9 +59,6 @@ class PostprocessSettings:
     copy_strategy: str = "all" # "all", "value_only", "unit_only"
     
     precision: int = 6  # Number of significant digits for display
-    
-    # Application settings (not directly related to post-processing)
-    screenshot_hotkey: str = "ctrl+alt+s"
 
 
 def format_decimal(value: Decimal, precision: int | None = None) -> str:

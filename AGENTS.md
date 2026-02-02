@@ -12,12 +12,13 @@ Work_OCR is a desktop OCR (Optical Character Recognition) application designed f
 - Real-time progress display and logging
 - Global hotkey support for quick screenshot capture (default: `Ctrl+Alt+S`)
 - Copy strategies: All / Values Only / Units Only
+- Three precision modes: PP-OCRv4 Server (High Precision) / PP-OCRv4 Server (Fast) / PP-OCRv4 Mobile (Super Fast)
 
 ## Technology Stack
 
 | Component | Technology |
 |-----------|------------|
-| Language | Python 3.11 |
+| Language | Python 3.11+ |
 | GUI Framework | PySide6 |
 | OCR Engine | PaddleOCR 3.4.0 + PaddlePaddle 3.2.0 (CPU) |
 | Image Processing | OpenCV (cv2), PIL/Pillow |
@@ -27,10 +28,10 @@ Work_OCR is a desktop OCR (Optical Character Recognition) application designed f
 ### Key Dependencies
 - `paddlepaddle==3.2.0` - Deep learning framework (CPU-only)
 - `paddleocr==3.4.0` - OCR toolkit
-- `PySide6` - Qt bindings for Python GUI
-- `keyboard` - Global hotkey registration
-- `opencv-contrib-python` - Image processing
-- `numpy`, `pandas` - Numerical and data manipulation
+- `PySide6>=6.0` - Qt bindings for Python GUI
+- `keyboard>=0.13` - Global hotkey registration
+- `opencv-contrib-python>=4.0` - Image processing
+- `numpy>=1.20`, `pandas>=1.3` - Numerical and data manipulation
 
 ## Project Structure
 
@@ -48,13 +49,13 @@ Work_OCR/
 │       └── postprocess.py  # Data post-processing pipeline
 │
 ├── tests/                  # Unit tests
-│   ├── test_app.py
-│   ├── test_capture.py
-│   ├── test_hotkey_manager.py
-│   ├── test_layout.py
-│   ├── test_ocr_engine.py
-│   ├── test_ocr_accuracy.py
-│   └── test_postprocess.py
+│   ├── test_app.py         # Main window and OcrWorker tests (pytest-qt)
+│   ├── test_capture.py     # Capture window tests (pytest-qt)
+│   ├── test_hotkey_manager.py  # Hotkey validation tests
+│   ├── test_layout.py      # Layout reconstruction tests
+│   ├── test_ocr_engine.py  # OCR engine tests
+│   ├── test_ocr_accuracy.py  # OCR accuracy validation
+│   └── test_postprocess.py  # Post-processing pipeline tests
 │
 ├── scripts/                # Utility scripts
 │   └── manual_test.py      # Standalone OCR test script
@@ -69,12 +70,15 @@ Work_OCR/
 │
 ├── docs/                   # Documentation
 │   └── prompt/             # Requirements (Chinese)
-│       └── needs.txt
+│       ├── needs.txt       # PRD + SRS document
+│       └── code_prompt/    # Development prompts
 │
 ├── pyproject.toml          # Project configuration (setuptools)
 ├── requirements.txt        # Python dependencies
 ├── config.json             # User configuration (auto-generated)
-└── .gitignore
+├── compare_ocr.py          # OCR result comparison utility
+├── README.md               # User documentation (Chinese)
+└── AGENTS.md               # This file
 ```
 
 ## Module Responsibilities
@@ -85,12 +89,14 @@ Work_OCR/
 - Orchestrates capture → OCR → layout → post-processing pipeline
 - Manages post-processing settings UI and real-time preview updates
 - Handles clipboard operations with copy strategy support
+- Supports three precision modes: high (server model + angle cls), fast (server model), superfast (mobile model)
 
 ### `src/work_ocr/capture.py`
 - `CaptureWindow`: Full-screen semi-transparent overlay for region selection
 - Emits `screenshot_completed` signal with captured QPixmap
 - Emits `screenshot_cancelled` signal when user presses Escape or selects too small area
 - Supports mouse drag selection and multi-monitor setups via virtual geometry
+- Handles high-DPI displays with devicePixelRatio scaling
 
 ### `src/work_ocr/hotkey_manager.py`
 - `HotkeyManager`: Manages global hotkey registration using the `keyboard` library
@@ -104,12 +110,14 @@ Work_OCR/
 - Configured for CPU-only execution with MKL-DNN disabled via environment variables
 - Returns OCR result as list of tuples: `[(bbox, (text, score)), ...]`
 - Custom exception: `OCREngineError`
+- Supports multiple model configurations (server/mobile, angle classification)
 
 ### `src/work_ocr/layout.py`
 - `detect_mode()`: Heuristic detection of table vs text layout based on vertical alignment
-- `reconstruct_table()`: Converts OCR results to TSV format using row/column clustering
+- `reconstruct_table()`: Converts OCR results to TSV format using row/column clustering with vertical projection histogram
 - `reconstruct_text()`: Preserves text layout with spacing based on character width
 - `reconstruct_text_with_postprocess()`: Enhanced text reconstruction with post-processing
+- `post_process_text()`: Fixes common OCR issues (Markdown headers, punctuation spacing)
 - `normalize_bbox()`: Normalizes bounding box formats (polygon or rectangle)
 
 ### `src/work_ocr/postprocess.py`
@@ -120,6 +128,8 @@ Work_OCR/
 - `convert_unit()`: Converts between engineering prefixes (f, p, n, u, m, k, M, G)
 - `to_scientific()`: Converts to scientific notation (e.g., 1.00E-05)
 - `to_engineering()`: Converts to engineering notation (e.g., 10.00E-06)
+- `sci_to_prefix()`: Converts scientific notation to best engineering prefix
+- `format_decimal()`: Formats Decimal values without scientific notation
 - `process_tsv()`: Main pipeline processing TSV data with all enabled transformations
 - `load_config()` / `save_config()`: Configuration persistence
 
@@ -166,7 +176,10 @@ pytest tests/test_postprocess.py::TestPostprocess
 ### Manual Testing
 ```bash
 # Run manual OCR test on test image
-python scripts/manual_test.py
+python scripts/manual_test.py --image-path assets/test_images/test_pic1_data_table.png
+
+# Run in fast mode
+python scripts/manual_test.py --image-path assets/test_images/test_pic1_data_table.png --fast
 ```
 
 ## Testing Strategy
@@ -201,6 +214,8 @@ python scripts/manual_test.py
   os.environ.setdefault("PADDLE_DISABLE_ONEDNN", "1")
   os.environ.setdefault("FLAGS_use_mkldnn", "0")
   os.environ.setdefault("FLAGS_enable_onednn", "0")
+  os.environ.setdefault("FLAGS_enable_pir_api", "0")
+  os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
   ```
 - Do NOT introduce CUDA or GPU dependencies
 
@@ -224,15 +239,17 @@ The application uses a `config.json` file for persisting user settings:
 ```json
 {
     "screenshot_hotkey": "ctrl+alt+s",
-    "apply_threshold": false,
+    "apply_threshold": true,
     "threshold_value": "5n",
-    "threshold_replace_with": "-",
+    "threshold_replace_with": "0",
     "apply_unit_conversion": true,
     "target_unit_prefix": "u",
     "split_value_unit": true,
     "notation_style": "none",
-    "precision": 6,
-    "copy_strategy": "all"
+    "precision": 3,
+    "copy_strategy": "all",
+    "fast_mode": false,
+    "precision_mode": "high"
 }
 ```
 
@@ -240,13 +257,14 @@ The application uses a `config.json` file for persisting user settings:
 - `screenshot_hotkey`: Global hotkey for screenshot (e.g., "ctrl+alt+s", "f1")
 - `apply_threshold`: Enable threshold replacement feature
 - `threshold_value`: Threshold value with unit prefix (e.g., "5n", "10u")
-- `threshold_replace_with": "-" or "0"
+- `threshold_replace_with`: "-" or "0"
 - `apply_unit_conversion`: Enable unit unification
 - `target_unit_prefix`: Target engineering prefix (f, p, n, u, m, k, M, G)
 - `split_value_unit`: Split numeric values and units into separate columns
 - `notation_style`: "none", "scientific", or "engineering"
 - `precision`: Number of significant digits (1-15)
 - `copy_strategy`: "all", "value_only", or "unit_only"
+- `precision_mode`: "high", "fast", or "superfast"
 
 Default config is created automatically if missing.
 
@@ -277,7 +295,7 @@ The application follows this processing flow:
 
 1. **Capture**: User selects screen region → `CaptureWindow` emits `screenshot_completed`
 2. **OCR**: `OcrWorker` runs OCR → `ocr_engine.OCREngine.recognize()`
-3. **Layout Detection**: `layout.detect_mode()` determines table vs text
+3. **Layout Detection**: Based on selected mode (Default/Table)
 4. **Layout Reconstruction**: 
    - Table: `layout.reconstruct_table()` → TSV format
    - Text: `layout.reconstruct_text_with_postprocess()` → formatted text
@@ -301,3 +319,19 @@ The post-processing module supports standard engineering prefixes:
 | G | 10⁹ | 0.1G | 100000000 |
 
 Note: The application uses 'u' instead of 'μ' for micro (10⁻⁶).
+
+## Additional Notes
+
+### WorkOCR_Core Directory
+The `WorkOCR_Core/` directory appears to be a duplicate of the main source code structure. For development purposes, use the main `src/work_ocr/` directory.
+
+### OCR Accuracy Comparison
+The `compare_ocr.py` file provides a utility to compare OCR output against ground truth data. This is used for validating OCR accuracy during development.
+
+### Precision Modes
+The application supports three OCR precision modes:
+1. **PP-OCRv4 Server (精准/High Precision)**: Uses server models with angle classification enabled
+2. **PP-OCRv4 Server (快速/Fast)**: Uses server models with angle classification disabled
+3. **PP-OCRv4 Mobile (超快/Super Fast)**: Uses mobile models for maximum speed
+
+Users can switch between modes via the precision mode dropdown in the UI.

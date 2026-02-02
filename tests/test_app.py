@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt # Needed for QPixmap.isNull()
 
 from work_ocr.app import MainWindow, OcrWorker
 from work_ocr import layout, postprocess
+from work_ocr.postprocess import PostprocessSettings
 
 class TestAppLogic(unittest.TestCase):
     """
@@ -341,6 +342,86 @@ class TestAppLogic(unittest.TestCase):
         # The content should be processed (tab-separated, possibly with unit conversion)
         self.assertIn("\t", processed_text)  # Should be tab-separated
 
+    @patch('work_ocr.app.json')
+    @patch('builtins.open')
+    @patch('work_ocr.app.hotkey_manager.HotkeyManager.register_screenshot_hotkey', return_value=True)
+    @patch('work_ocr.postprocess.load_config')
+    def test_precision_mode_setting_load_and_save(self, mock_load_config, mock_register_hotkey, mock_open, mock_json):
+        """
+        Test that precision_mode setting is loaded and saved correctly.
+        """
+        mock_load_config.return_value = PostprocessSettings()
+        # 1. Test loading the setting for "fast" mode
+        mock_json.load.return_value = {"precision_mode": "fast", "screenshot_hotkey": "ctrl+alt+s"}
+        
+        window = MainWindow()
+        
+        self.assertEqual(window.precision_mode_combo.currentIndex(), 1, "Combo box should be set to 'fast' from loaded config")
+        
+        # 2. Test saving the setting
+        # Simulate changing to "high" mode
+        window.precision_mode_combo.setCurrentIndex(0)
+        
+        # Verify that json.dump was called with the updated setting
+        self.assertTrue(mock_json.dump.called)
+        args, kwargs = mock_json.dump.call_args
+        self.assertIn('precision_mode', args[0])
+        self.assertEqual(args[0]['precision_mode'], "high", "precision_mode should be saved as 'high'")
+
+    @patch('PySide6.QtWidgets.QLabel.setPixmap')
+    @patch('work_ocr.app.OcrWorker')
+    @patch('work_ocr.app.ocr_engine.OCREngine') # Patch the engine class
+    @patch('work_ocr.app.hotkey_manager.HotkeyManager.register_screenshot_hotkey', return_value=True)
+    @patch('work_ocr.postprocess.load_config') # Prevent file read
+    def test_main_window_creates_worker_with_correct_params(self, mock_load_config, mock_register_hotkey, mock_OCREngine, mock_OcrWorker, mock_set_pixmap):
+        """
+        Test that MainWindow creates OcrWorker with the correct OCR engine parameters.
+        """
+        mock_load_config.return_value = PostprocessSettings()
+        window = MainWindow()
+        window.worker = None
+
+        # Case 1: Fast mode is ON
+        window.precision_mode_combo.setCurrentIndex(1)
+        window.on_screenshot_finished("path/to/image.png")
+
+        # Assert OCREngine was created with FAST params
+        mock_OCREngine.assert_called_once()
+        _, engine_kwargs = mock_OCREngine.call_args
+        self.assertEqual(engine_kwargs.get('ocr_version'), 'PP-OCRv3')
+        self.assertIn('use_angle_cls', engine_kwargs)
+        self.assertFalse(engine_kwargs['use_angle_cls'], "use_angle_cls should be False for fast mode")
+        mock_OCREngine.reset_mock()
+        mock_OcrWorker.reset_mock()
+        window.worker = None
+
+        # Case 2: High precision mode is ON
+        window.precision_mode_combo.setCurrentIndex(0)
+        window.on_screenshot_finished("path/to/other_image.png")
+
+        # Assert OCREngine was created with HIGH-PRECISION params
+        mock_OCREngine.assert_called_once()
+        _, engine_kwargs = mock_OCREngine.call_args
+        self.assertEqual(engine_kwargs.get('ocr_version'), 'PP-OCRv3')
+        self.assertTrue(engine_kwargs['use_angle_cls'], "use_angle_cls should be True for high-precision mode")
+        self.assertNotIn('det_model_dir', engine_kwargs, "Should not use slim models in high precision mode")
+        mock_OCREngine.reset_mock()
+        mock_OcrWorker.reset_mock()
+        window.worker = None
+
+        # Case 3: Super-fast mode is ON
+        window.precision_mode_combo.setCurrentIndex(2)
+        window.on_screenshot_finished("path/to/superfast_image.png")
+
+        # Assert OCREngine was created with SUPER-FAST params (now using PP-OCRv3)
+        mock_OCREngine.assert_called_once()
+        _, engine_kwargs = mock_OCREngine.call_args
+        self.assertEqual(engine_kwargs.get('ocr_version'), 'PP-OCRv3')
+        self.assertTrue(engine_kwargs['use_angle_cls'], "Angle correction should be on for super-fast mode")
+        self.assertNotIn('det_model_dir', engine_kwargs)
+        self.assertNotIn('rec_model_dir', engine_kwargs)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+        

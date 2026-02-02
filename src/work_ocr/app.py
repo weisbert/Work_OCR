@@ -1,390 +1,621 @@
 # -*- coding: utf-8 -*-
-"""
-Main application file for the Work OCR tool.
+"""Main GUI application for Work_OCR."""
 
-This module initializes the main window, orchestrates the different components
-(capture, OCR, layout, post-processing), and handles user interactions.
-"""
+from __future__ import annotations
 
 import sys
-import time
-import tempfile # Moved from on_screenshot_captured
-import os       # Moved from on_screenshot_captured
-import re
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QTabWidget, QProgressBar,
-    QPlainTextEdit, QComboBox, QSplitter, QMessageBox,
-    QGroupBox, QCheckBox, QLineEdit, QGridLayout, QSpinBox
-)
-from PySide6.QtCore import Qt, QThread, Signal, Slot
-from PySide6.QtGui import QPixmap, QGuiApplication
+import signal
+import tempfile
+import os
+from pathlib import Path
+from typing import Optional, Dict, Any
 
-# Import project modules
-from . import capture
-from . import ocr_engine
-from . import layout
-from . import postprocess
-from . import hotkey_manager
+# Fix Ctrl+C on Windows - must be done before importing paddle (via ocr_engine)
+if sys.platform == "win32":
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+from PySide6.QtCore import Qt, Slot, Signal, QThread, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QKeySequence, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QStyle,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QCheckBox,
+    QSpinBox,
+    QDoubleSpinBox,
+    QGroupBox,
+    QFormLayout,
+    QDialog,
+    QListWidget,
+    QListWidgetItem,
+)
+
+# Import local modules
+from . import capture, hotkey_manager, ocr_engine, layout, postprocess
+
+
+class TextLogger:
+    """Logger that writes to a QPlainTextEdit widget."""
+
+    def __init__(self, widget: QPlainTextEdit):
+        self.widget = widget
+
+    def info(self, message: str) -> None:
+        self.widget.appendPlainText(f"[INFO] {message}")
+
+    def warning(self, message: str) -> None:
+        self.widget.appendPlainText(f"[WARN] {message}")
 
 
 class OcrWorker(QThread):
+    """Worker thread for running OCR pipeline without freezing UI.
+    
+    Supports immediate cancellation via stop() method.
+    When stopped, the worker continues running in background but results are discarded.
     """
-    A worker thread for running the entire OCR pipeline to avoid freezing the GUI.
 
-    Signals:
-        progress (str, int): Emits progress updates with a message and a percentage value.
-        finished (str, str, str, str): Emits when processing is complete, sending
-                                       layout_result, post_result, detected_mode, and image_path.
-        error (str): Emits when an error occurs during processing.
-    """
-    progress = Signal(str, int)
-    finished = Signal(str, str, str, str)
+    progress = Signal(str, int)  # message, percentage
+    finished = Signal(str, str, str, str)  # layout_result, post_result, detected_mode, image_path
     error = Signal(str)
+    stopped = Signal()
 
     def __init__(self, image_path: str, mode: str, ocr: ocr_engine.OCREngine):
         super().__init__()
         self.image_path = image_path
         self.mode = mode
         self.ocr = ocr
+        self._is_cancelled = False
 
     def run(self):
-        """Execute the OCR pipeline."""
         try:
-            total_steps = 8
-            start_time = time.time()
+            self.progress.emit("Initializing OCR engine...", 10)
+            self.ocr.initialize()
 
-            def update_progress(step, message):
-                self.progress.emit(f"({step}/{total_steps}) {message}", int(step / total_steps * 100))
+            if self._is_cancelled:
+                return  # Silently exit
 
-            # Steps 1-2: Perform OCR
-            update_progress(1, "Initializing OCR...")
-            update_progress(2, "Performing OCR...")
+            self.progress.emit("Running OCR recognition...", 30)
             ocr_result = self.ocr.recognize(self.image_path)
-            ocr_time = time.time()
-            self.progress.emit(f"OCR finished in {ocr_time - start_time:.2f}s.", int(2 / total_steps * 100))
 
-            # Steps 3-4: Analyze Layout
-            update_progress(3, "Analyzing layout...")
+            if self._is_cancelled:
+                return  # Silently exit, don't emit any signals
+
+            self.progress.emit("Analyzing layout...", 50)
+            detected_mode = layout.detect_mode(ocr_result)
+
+            if self._is_cancelled:
+                return
+
+            self.progress.emit("Reconstructing layout...", 70)
+
             if self.mode == "table":
-                detected_mode = "table"
                 layout_result = layout.reconstruct_table(ocr_result)
             else:
-                detected_mode = "default"
                 layout_result = layout.reconstruct_text_with_postprocess(ocr_result)
-            layout_time = time.time()
-            self.progress.emit(f"Layout analysis finished in {layout_time - ocr_time:.2f}s.", int(4 / total_steps * 100))
 
-            # Steps 5-6: Post-process Table
-            post_result = ""
-            # Only auto post-process in 'table' mode
-            # In 'default' mode, post-processing is done on-demand when user switches tab
-            if detected_mode == 'table':
-                update_progress(5, "Loading post-processor settings...")
-                settings = postprocess.load_config()
-                update_progress(6, "Post-processing table...")
+            if self._is_cancelled:
+                return
+
+            self.progress.emit("Post-processing...", 90)
+            settings = postprocess.load_config()
+
+            if self.mode == "table":
                 post_result = postprocess.process_tsv(layout_result, settings)
-                post_time = time.time()
-                self.progress.emit(f"Post-processing finished in {post_time - layout_time:.2f}s.", int(6 / total_steps * 100))
             else:
-                update_progress(6, "Skipping auto post-processing in default mode.")
+                post_result = layout_result
 
-            # Steps 7-8: Finalize
-            update_progress(7, "Finalizing results...")
-            end_time = time.time()
-            update_progress(8, f"Total processing time: {end_time - start_time:.2f}s.")
+            if self._is_cancelled:
+                return
 
-            self.finished.emit(layout_result, post_result, detected_mode, self.image_path)
+            self.progress.emit("Completed!", 100)
+            self.finished.emit(layout_result, post_result, self.mode, self.image_path)
 
-        except Exception as e:
-            self.error.emit(f"An error occurred in the worker thread: {str(e)}")
+        except ocr_engine.CancelledError:
+            pass  # Silently exit on cancellation
+        except Exception as exc:
+            if not self._is_cancelled:
+                self.error.emit(str(exc))
+
+    def stop(self):
+        """Cancel the OCR process immediately.
+        
+        This method returns immediately without blocking.
+        The worker continues in background but results will be discarded.
+        """
+        self._is_cancelled = True
+        if hasattr(self.ocr, 'cancel'):
+            self.ocr.cancel()
 
 
 class MainWindow(QMainWindow):
-    """
-    The main window of the application, responsible for UI and orchestrating modules.
-    """
+    """Main application window."""
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Work OCR")
+        self.setWindowTitle("Work_OCR - Screen OCR Tool")
         self.setGeometry(100, 100, 1200, 800)
 
-        self.worker = None
-        self.capture_window = None
-        self.original_ocr_result = ""  # Store raw OCR result for real-time preview
-        self.current_settings = postprocess.PostprocessSettings()  # Current post-process settings
-        self.hotkey_mgr = hotkey_manager.HotkeyManager()  # Global hotkey manager
-        self.screenshot_hotkey = "ctrl+alt+s"  # Default hotkey
-        
-        self.setup_ui()
-        self.connect_signals()
-        self.load_settings()
-        self.initialize_engines()
+        # Worker thread
+        self.worker: Optional[OcrWorker] = None
 
-    def setup_ui(self):
-        """Create and arrange all UI widgets."""
-        main_splitter = QSplitter(Qt.Horizontal, self)
+        # Screenshot temp file path
+        self.current_screenshot_path: Optional[str] = None
 
-        # Left Panel: Image Preview
-        self.image_label = QLabel("Screenshot will appear here")
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setMinimumWidth(400)
-        
-        # Right Panel: Controls, Results, and Logs
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        # Hotkey manager
+        self.hotkey_manager: Optional[hotkey_manager.HotkeyManager] = None
 
-        # Top Controls
-        controls_layout = QHBoxLayout()
-        self.screenshot_button = QPushButton("Screenshot")
-        self.copy_button = QPushButton("Copy")
-        self.clear_button = QPushButton("Clear")
+        self._init_ui()
+        self._init_hotkey()
+        self._init_menu()
+
+    def _init_ui(self):
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Main horizontal splitter
+        main_splitter = QSplitter(Qt.Horizontal)
+
+        # Left panel: Controls
+        left_panel = self._create_left_panel()
+        main_splitter.addWidget(left_panel)
+
+        # Right panel: Results
+        right_panel = self._create_right_panel()
+        main_splitter.addWidget(right_panel)
+
+        # Set splitter proportions
+        main_splitter.setSizes([400, 800])
+
+        # Layout
+        layout_main = QHBoxLayout(central_widget)
+        layout_main.addWidget(main_splitter)
+
+    def _create_left_panel(self) -> QWidget:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+
+        # --- OCR Control Group ---
+        ocr_group = QGroupBox("OCR Control")
+        ocr_layout = QVBoxLayout(ocr_group)
+
+        # Screenshot button
+        self.screenshot_btn = QPushButton("📷 Take Screenshot (Ctrl+Alt+S)")
+        self.screenshot_btn.setToolTip("Click to capture a screen region")
+        self.screenshot_btn.clicked.connect(self.on_screenshot_clicked)
+        ocr_layout.addWidget(self.screenshot_btn)
+
+        # Retry button
+        self.retry_button = QPushButton("🔄 Retry OCR")
+        self.retry_button.setEnabled(False)
+        self.retry_button.clicked.connect(self.on_retry_clicked)
+        ocr_layout.addWidget(self.retry_button)
+
+        # Stop button
+        self.stop_button = QPushButton("⏹ Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.on_stop_clicked)
+        ocr_layout.addWidget(self.stop_button)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        ocr_layout.addWidget(self.progress_bar)
+
+        panel_layout.addWidget(ocr_group)
+
+        # --- OCR Settings Group ---
+        settings_group = QGroupBox("OCR Settings")
+        settings_layout = QFormLayout(settings_group)
+
+        # Mode selection
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Default", "Table"])
-        
-        # Hotkey setting
-        self.hotkey_input = QLineEdit()
-        self.hotkey_input.setPlaceholderText("e.g., ctrl+alt+s")
-        self.hotkey_input.setMaximumWidth(120)
-        self.hotkey_register_btn = QPushButton("Set Hotkey")
-        self.hotkey_status_label = QLabel("(Global: None)")
-        
-        controls_layout.addWidget(self.screenshot_button)
-        controls_layout.addWidget(self.copy_button)
-        controls_layout.addWidget(self.clear_button)
-        controls_layout.addStretch()
-        controls_layout.addWidget(QLabel("Mode:"))
-        controls_layout.addWidget(self.mode_combo)
-        controls_layout.addWidget(QLabel("Hotkey:"))
-        controls_layout.addWidget(self.hotkey_input)
-        controls_layout.addWidget(self.hotkey_register_btn)
-        controls_layout.addWidget(self.hotkey_status_label)
+        self.mode_combo.addItems(["Table Mode", "Text Mode"])
+        self.mode_combo.setToolTip("Select OCR output mode")
+        settings_layout.addRow("Mode:", self.mode_combo)
 
-        # Results Tabs
-        self.tabs = QTabWidget()
-        self.ocr_result_text = QTextEdit()
-        self.ocr_result_text.setReadOnly(True)
-        self.tabs.addTab(self.ocr_result_text, "OCR Result")
-        
-        # Post-processed Tab with control panel and preview
-        self.postprocess_widget = self._create_postprocess_tab()
-        self.tabs.addTab(self.postprocess_widget, "Post-processed")
+        # Precision mode selection
+        self.precision_mode_combo = QComboBox()
+        self.precision_mode_combo.addItems(["High Precision", "Fast", "Super Fast"])
+        self.precision_mode_combo.setToolTip(
+            "High: Better accuracy with angle detection\n"
+            "Fast: Good balance\n"
+            "Super Fast: Maximum speed"
+        )
+        settings_layout.addRow("Speed:", self.precision_mode_combo)
 
-        # Bottom: Log and Progress Bar
+        panel_layout.addWidget(settings_group)
+
+        # --- Post-processing Settings Group ---
+        post_group = QGroupBox("Post-processing (Table Mode)")
+        post_layout = QVBoxLayout(post_group)
+
+        # Load config once for initialization
+        _config = postprocess.load_config()
+        
+        # Threshold settings
+        self.threshold_check = QCheckBox("Apply Threshold Replacement")
+        self.threshold_check.setChecked(_config.apply_threshold)
+        post_layout.addWidget(self.threshold_check)
+
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("Value:"))
+        self.threshold_value = QLineEdit(_config.threshold_value)
+        self.threshold_value.setMaximumWidth(60)
+        threshold_layout.addWidget(self.threshold_value)
+        threshold_layout.addWidget(QLabel("Replace with:"))
+        self.threshold_replace = QLineEdit(_config.threshold_replace_with)
+        self.threshold_replace.setMaximumWidth(40)
+        threshold_layout.addWidget(self.threshold_replace)
+        threshold_layout.addStretch()
+        post_layout.addLayout(threshold_layout)
+
+        # Unit conversion
+        self.unit_conv_check = QCheckBox("Convert to Target Unit")
+        self.unit_conv_check.setChecked(_config.apply_unit_conversion)
+        post_layout.addWidget(self.unit_conv_check)
+
+        unit_layout = QHBoxLayout()
+        unit_layout.addWidget(QLabel("Target prefix:"))
+        self.target_unit = QComboBox()
+        self.target_unit.addItems(["f", "p", "n", "u", "m", "k", "M", "G"])
+        self.target_unit.setCurrentText(_config.target_unit_prefix if _config.target_unit_prefix else "u")
+        unit_layout.addWidget(self.target_unit)
+        unit_layout.addStretch()
+        post_layout.addLayout(unit_layout)
+
+        # Split value/unit
+        self.split_check = QCheckBox("Split Value and Unit")
+        self.split_check.setChecked(_config.split_value_unit)
+        post_layout.addWidget(self.split_check)
+
+        # Notation style
+        notation_layout = QHBoxLayout()
+        notation_layout.addWidget(QLabel("Notation:"))
+        self.notation_combo = QComboBox()
+        self.notation_combo.addItems(["None", "Scientific", "Engineering"])
+        notation_map = {"none": 0, "scientific": 1, "engineering": 2}
+        self.notation_combo.setCurrentIndex(
+            notation_map.get(_config.notation_style, 0)
+        )
+        notation_layout.addWidget(self.notation_combo)
+        notation_layout.addStretch()
+        post_layout.addLayout(notation_layout)
+
+        # Precision
+        precision_layout = QHBoxLayout()
+        precision_layout.addWidget(QLabel("Precision:"))
+        self.precision_spin = QSpinBox()
+        self.precision_spin.setRange(1, 15)
+        self.precision_spin.setValue(_config.precision)
+        precision_layout.addWidget(self.precision_spin)
+        precision_layout.addStretch()
+        post_layout.addLayout(precision_layout)
+
+        # Copy strategy
+        copy_layout = QHBoxLayout()
+        copy_layout.addWidget(QLabel("Copy:"))
+        self.copy_combo = QComboBox()
+        self.copy_combo.addItems(["All", "Values Only", "Units Only"])
+        copy_map = {"all": 0, "value_only": 1, "unit_only": 2}
+        self.copy_combo.setCurrentIndex(
+            copy_map.get(_config.copy_strategy, 0)
+        )
+        copy_layout.addWidget(self.copy_combo)
+        copy_layout.addStretch()
+        post_layout.addLayout(copy_layout)
+
+        # Save button
+        self.save_post_btn = QPushButton("💾 Save Settings")
+        self.save_post_btn.clicked.connect(self.on_save_post_settings)
+        post_layout.addWidget(self.save_post_btn)
+
+        panel_layout.addWidget(post_group)
+
+        # --- Log Panel ---
+        log_group = QGroupBox("Log")
+        log_layout = QVBoxLayout(log_group)
+
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
-        self.progress_bar = QProgressBar()
+        self.log_text.setMaximumBlockCount(1000)
+        log_layout.addWidget(self.log_text)
 
-        # Assemble Right Panel
-        right_layout.addLayout(controls_layout)
-        right_layout.addWidget(self.tabs)
-        right_layout.addWidget(QLabel("Log"))
-        right_layout.addWidget(self.log_text)
-        right_layout.addWidget(QLabel("Progress"))
-        right_layout.addWidget(self.progress_bar)
+        # Text logger for OCR engine
+        self.text_logger = TextLogger(self.log_text)
 
-        # Assemble Main Splitter
-        main_splitter.addWidget(self.image_label)
-        main_splitter.addWidget(right_widget)
-        main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([500, 700])
-        self.setCentralWidget(main_splitter)
+        panel_layout.addWidget(log_group)
 
-    def _create_postprocess_tab(self):
-        """Create the Post-processed tab with control panel and preview."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        
-        # Control Panel Group
-        control_group = QGroupBox("Table Post-processing Settings")
-        control_layout = QGridLayout(control_group)
-        
-        # Row 0: Threshold Replacement
-        self.threshold_checkbox = QCheckBox("Enable Threshold Replacement")
-        self.threshold_value_input = QLineEdit("5n")
-        self.threshold_value_input.setPlaceholderText("e.g., 5n, 10u, 0.1m")
-        self.threshold_replace_combo = QComboBox()
-        self.threshold_replace_combo.addItems(["-", "0"])
-        
-        control_layout.addWidget(self.threshold_checkbox, 0, 0)
-        control_layout.addWidget(QLabel("Threshold:"), 0, 1)
-        control_layout.addWidget(self.threshold_value_input, 0, 2)
-        control_layout.addWidget(QLabel("Replace with:"), 0, 3)
-        control_layout.addWidget(self.threshold_replace_combo, 0, 4)
-        
-        # Row 1: Unit Conversion
-        self.unit_conv_checkbox = QCheckBox("Enable Unit Unification")
-        self.target_unit_combo = QComboBox()
-        self.target_unit_combo.addItems(["f (1e-15)", "p (1e-12)", "n (1e-9)", "u (1e-6)", 
-                                         "m (1e-3)", "base (1e0)", "k (1e3)", "M (1e6)", "G (1e9)"])
-        self.target_unit_combo.setCurrentIndex(3)  # Default to 'u'
-        
-        control_layout.addWidget(self.unit_conv_checkbox, 1, 0)
-        control_layout.addWidget(QLabel("Target Unit:"), 1, 1)
-        control_layout.addWidget(self.target_unit_combo, 1, 2)
-        
-        # Row 2: Value/Unit Split and Notation
-        self.split_checkbox = QCheckBox("Split Value and Unit")
-        self.notation_combo = QComboBox()
-        self.notation_combo.addItems(["None", "Scientific (e.g., 1.00E-05)", 
-                                      "Engineering (e.g., 10.00E-06)"])
-        
-        control_layout.addWidget(self.split_checkbox, 2, 0)
-        control_layout.addWidget(QLabel("Notation:"), 2, 1)
-        control_layout.addWidget(self.notation_combo, 2, 2)
-        
-        # Precision setting
-        self.precision_spinbox = QSpinBox()
-        self.precision_spinbox.setRange(1, 15)
-        self.precision_spinbox.setValue(6)
-        self.precision_spinbox.setSuffix(" digits")
-        control_layout.addWidget(QLabel("Precision:"), 2, 3)
-        control_layout.addWidget(self.precision_spinbox, 2, 4)
-        
-        # Row 3: Copy Strategy and Buttons
-        self.copy_strategy_combo = QComboBox()
-        self.copy_strategy_combo.addItems(["Copy All", "Copy Values Only", "Copy Units Only"])
-        self.generate_button = QPushButton("Generate Preview")
-        self.apply_button = QPushButton("Apply & Save Settings")
-        self.reset_button = QPushButton("Reset to Default")
-        
-        control_layout.addWidget(QLabel("Copy Strategy:"), 3, 0)
-        control_layout.addWidget(self.copy_strategy_combo, 3, 1, 1, 2)
-        control_layout.addWidget(self.generate_button, 3, 3)
-        control_layout.addWidget(self.apply_button, 3, 4)
-        control_layout.addWidget(self.reset_button, 3, 5)
-        
-        # Set column stretch
-        control_layout.setColumnStretch(2, 1)
-        
-        # Preview Text Area
-        preview_label = QLabel("Preview:")
-        self.postprocessed_text = QTextEdit()
-        self.postprocessed_text.setReadOnly(True)
-        
-        layout.addWidget(control_group)
-        layout.addWidget(preview_label)
-        layout.addWidget(self.postprocessed_text, stretch=1)
-        
-        return widget
+        # OCR control widget (shown during processing)
+        self.ocr_control_widget = QWidget()
+        ocr_control_layout = QVBoxLayout(self.ocr_control_widget)
+        ocr_control_layout.setContentsMargins(0, 0, 0, 0)
+        self.ocr_control_widget.setVisible(False)
 
-    def connect_signals(self):
-        """Connect UI element signals to corresponding slots."""
-        self.screenshot_button.clicked.connect(self.start_screenshot)
-        self.copy_button.clicked.connect(self.copy_to_clipboard)
-        self.clear_button.clicked.connect(self.clear_all)
-        
-        # Hotkey signals
-        self.hotkey_register_btn.clicked.connect(self.on_register_hotkey)
-        self.hotkey_mgr.screenshot_hotkey_pressed.connect(self.on_hotkey_screenshot)
-        
-        # Post-processing control signals
-        self.generate_button.clicked.connect(self.on_generate_postprocess)
-        self.apply_button.clicked.connect(self.on_apply_postprocess_settings)
-        self.reset_button.clicked.connect(self.on_reset_postprocess_settings)
-        
-        # Real-time preview on any control change
-        self.threshold_checkbox.stateChanged.connect(self.on_postprocess_changed)
-        self.threshold_value_input.textChanged.connect(self.on_postprocess_changed)
-        self.threshold_replace_combo.currentIndexChanged.connect(self.on_postprocess_changed)
-        self.unit_conv_checkbox.stateChanged.connect(self.on_postprocess_changed)
-        self.target_unit_combo.currentIndexChanged.connect(self.on_postprocess_changed)
-        self.split_checkbox.stateChanged.connect(self.on_postprocess_changed)
-        self.notation_combo.currentIndexChanged.connect(self.on_postprocess_changed)
-        self.precision_spinbox.valueChanged.connect(self.on_postprocess_changed)
-        self.copy_strategy_combo.currentIndexChanged.connect(self.on_postprocess_changed)
+        panel_layout.addStretch()
+        return panel
 
-    def initialize_engines(self):
-        """Initialize backend modules."""
-        self.log_text.appendPlainText("Initializing engines...")
-        QApplication.processEvents()
+    def _create_right_panel(self) -> QWidget:
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Image preview area
+        self.image_label = QLabel("Click 'Take Screenshot' to capture an image")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumHeight(300)
+        self.image_label.setStyleSheet("background-color: #f0f0f0; border: 1px dashed #999;")
+
+        image_scroll = QScrollArea()
+        image_scroll.setWidget(self.image_label)
+        image_scroll.setWidgetResizable(True)
+        panel_layout.addWidget(image_scroll, 1)
+
+        # Results tabs
+        self.results_tabs = QTabWidget()
+
+        # Raw result tab
+        self.raw_text = QTextEdit()
+        self.raw_text.setReadOnly(False)
+        self.raw_text.setPlaceholderText("Raw OCR result will appear here...")
+        self.results_tabs.addTab(self.raw_text, "📄 Raw Result")
+
+        # Table result tab
+        self.table_widget = QTableWidget()
+        self.results_tabs.addTab(self.table_widget, "📊 Table View")
+
+        # Post-processed tab
+        self.post_text = QTextEdit()
+        self.post_text.setReadOnly(False)
+        self.post_text.setPlaceholderText("Post-processed result will appear here...")
+        self.results_tabs.addTab(self.post_text, "✨ Post-processed")
+
+        panel_layout.addWidget(self.results_tabs, 2)
+
+        # Copy buttons
+        btn_layout = QHBoxLayout()
+
+        self.copy_raw_btn = QPushButton("📋 Copy Raw")
+        self.copy_raw_btn.clicked.connect(lambda: self.copy_to_clipboard(self.raw_text.toPlainText()))
+        btn_layout.addWidget(self.copy_raw_btn)
+
+        self.copy_post_btn = QPushButton("📋 Copy Post-processed")
+        self.copy_post_btn.clicked.connect(lambda: self.copy_to_clipboard(self.post_text.toPlainText()))
+        btn_layout.addWidget(self.copy_post_btn)
+
+        self.copy_table_btn = QPushButton("📋 Copy Table (TSV)")
+        self.copy_table_btn.clicked.connect(self.copy_table_as_tsv)
+        btn_layout.addWidget(self.copy_table_btn)
+
+        panel_layout.addLayout(btn_layout)
+
+        return panel
+
+    def _init_hotkey(self):
+        """Initialize global hotkey manager."""
         try:
-            self.ocr_engine = ocr_engine.OCREngine()
-            self.log_text.appendPlainText("Engines initialized successfully.")
-        except Exception as e:
-            self.log_text.appendPlainText(f"Error initializing engines: {e}")
-            QMessageBox.critical(self, "Initialization Error", f"Failed to initialize engines: {e}")
+            self.hotkey_manager = hotkey_manager.HotkeyManager()
+            self.hotkey_manager.screenshot_hotkey_pressed.connect(self.on_screenshot_clicked)
+            
+            # Load saved hotkey or use default
+            config = postprocess.load_config()
+            hotkey = config.screenshot_hotkey
+            
+            if not self.hotkey_manager.register_hotkey(hotkey):
+                self.log_text.appendPlainText(f"Warning: Failed to register hotkey '{hotkey}'")
+            else:
+                self.log_text.appendPlainText(f"Global hotkey registered: {hotkey}")
+        except Exception as exc:
+            self.log_text.appendPlainText(f"Hotkey manager not available: {exc}")
+            self.hotkey_manager = None
+
+    def _init_menu(self):
+        """Initialize menu bar."""
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("File")
+
+        open_action = QAction("Open Image...", self)
+        open_action.setShortcut(QKeySequence.Open)
+        open_action.triggered.connect(self.on_open_image)
+        file_menu.addAction(open_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut(QKeySequence.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Settings menu
+        settings_menu = menubar.addMenu("Settings")
+
+        hotkey_action = QAction("Configure Hotkey...", self)
+        hotkey_action.triggered.connect(self.on_configure_hotkey)
+        settings_menu.addAction(hotkey_action)
+
+        # Help menu
+        help_menu = menubar.addMenu("Help")
+
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.on_about)
+        help_menu.addAction(about_action)
 
     @Slot()
-    def start_screenshot(self):
-        """Hides the main window and shows the capture window."""
-        self.log_text.appendPlainText("Waiting for screenshot...")
-        self.hide()
-        # Give time for the main window to hide completely before showing the capture window.
-        QApplication.processEvents()
-        QThread.msleep(200) 
+    def on_screenshot_clicked(self):
+        """Handle screenshot button click."""
+        # Minimize window before capture
+        self.showMinimized()
 
+        # Small delay to let window minimize
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(300, self._start_capture)
+
+    def _start_capture(self):
+        """Start screen capture after delay."""
         self.capture_window = capture.CaptureWindow()
-        self.capture_window.screenshot_completed.connect(self.on_screenshot_captured)
+        self.capture_window.screenshot_completed.connect(self.on_screenshot_completed)
         self.capture_window.screenshot_cancelled.connect(self.on_screenshot_cancelled)
         self.capture_window.show()
 
+    @Slot(QPixmap)
+    def on_screenshot_completed(self, pixmap: QPixmap):
+        """Handle completed screenshot."""
+        self.restoreWindow()
+
+        # Save to temp file
+        if self.current_screenshot_path and os.path.exists(self.current_screenshot_path):
+            try:
+                os.remove(self.current_screenshot_path)
+            except Exception:
+                pass
+
+        fd, self.current_screenshot_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        pixmap.save(self.current_screenshot_path)
+
+        # Display
+        self.image_label.setPixmap(
+            pixmap.scaled(
+                self.image_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        )
+
+        # Start OCR
+        self.start_ocr(self.current_screenshot_path)
+
     @Slot()
     def on_screenshot_cancelled(self):
-        """Handles when user cancels the screenshot (presses Esc or selects too small area)."""
-        self.show()  # Show the main window again
-        if self.capture_window:
-            self.capture_window.deleteLater()  # Clean up the capture window
-            self.capture_window = None
-        self.log_text.appendPlainText("Screenshot cancelled by user.")
+        """Handle cancelled screenshot."""
+        self.restoreWindow()
 
-    @Slot(QPixmap)
-    def on_screenshot_captured(self, pixmap: QPixmap):
-        """Handles the QPixmap returned from the capture window, saves it, and starts OCR."""
-        self.show() # Show the main window again
-        if self.capture_window:
-            self.capture_window.deleteLater() # Clean up the capture window
-            self.capture_window = None
+    def restoreWindow(self):
+        """Restore window from minimized state."""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
-        if pixmap.isNull():
-            self.log_text.appendPlainText("Screenshot capture failed (null pixmap).")
+    def start_ocr(self, image_path: str):
+        """Start OCR processing on the given image."""
+        # If a worker is still running, stop it and delay restart
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.log_text.appendPlainText("Waiting for previous OCR to stop...")
+            # Delay restart to allow old worker to clean up
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, lambda: self._start_ocr_safe(image_path))
             return
+        
+        self._start_ocr_safe(image_path)
+    
+    def _start_ocr_safe(self, image_path: str):
+        """Actually start OCR - only call when no worker is running."""
+        # Double-check worker is finished
+        if self.worker and self.worker.isRunning():
+            # Still running, delay again
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, lambda: self._start_ocr_safe(image_path))
+            return
+        
+        self.log_text.clear()
+        self.log_text.appendPlainText(f"Processing: {image_path}")
 
-        # Save the QPixmap to a temporary file, then pass the path to the original on_screenshot_finished
-        import tempfile
-        import os
-        try:
-            # mkstemp returns (fd, name)
-            fd, temp_image_path = tempfile.mkstemp(suffix=".png")
-            os.close(fd) # Close the file descriptor immediately
+        current_mode = self.mode_combo.currentText().lower()
+        ocr_params = self._get_ocr_params()
+        engine = ocr_engine.OCREngine(**ocr_params)
+        
+        self.worker = OcrWorker(image_path, current_mode, engine)
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.on_processing_finished)
+        self.worker.error.connect(self.on_processing_error)
+        self.worker.stopped.connect(self.on_processing_stopped)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.stopped.connect(self.worker.deleteLater)
 
-            if pixmap.save(temp_image_path, "PNG"):
-                self.on_screenshot_finished(temp_image_path)
-                # The temp file will be processed and then deleted by the caller (or when app exits)
-            else:
-                self.log_text.appendPlainText("Failed to save temporary screenshot file.")
-                os.remove(temp_image_path) # Clean up failed save
-        except Exception as e:
-            self.log_text.appendPlainText(f"Error saving screenshot: {e}")
+        self.ocr_control_widget.setVisible(True)
+        self.stop_button.setEnabled(True)
+        self.retry_button.setEnabled(False)
+        self.progress_bar.setValue(0)
+        
+        self.worker.start()
 
-    @Slot(str)
-    def on_screenshot_finished(self, image_path: str):
-        """Callback slot for when screen capture is finished."""
-        if image_path and self.worker is None:
-            self.log_text.appendPlainText(f"Screenshot saved to {image_path}")
-            self.clear_results()
-            
-            pixmap = QPixmap(image_path)
-            self.image_label.setPixmap(pixmap.scaled(
-                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    def _get_ocr_params(self) -> dict:
+        """Get OCR engine parameters based on the selected precision mode.
+        
+        Available models (in ~/.paddlex/official_models/):
+        - PP-OCRv3_mobile_det/rec (lightweight, faster)
+        - PP-OCRv5_server_det/rec (high accuracy, slower)
+        """
+        index = self.precision_mode_combo.currentIndex()
+        mode_map = {0: "high", 1: "fast", 2: "superfast"}
+        mode_str = mode_map.get(index, "high")
 
-            current_mode = self.mode_combo.currentText().lower()
+        self.log_text.appendPlainText(f"Precision Mode: {mode_str}")
 
-            self.worker = OcrWorker(
-                image_path, current_mode, self.ocr_engine
-            )
-            self.worker.progress.connect(self.update_progress)
-            self.worker.finished.connect(self.on_processing_finished)
-            self.worker.error.connect(self.on_processing_error)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.worker.start()
-        elif self.worker is not None and self.worker.isRunning():
-             self.log_text.appendPlainText("Processing is already in progress.")
+        # Base parameters
+        base_params = {
+            "show_log": False,
+            "logger": self.text_logger
+        }
+        
+        if mode_str == "high":
+            # High precision: PP-OCRv5_server + angle classification
+            return {
+                **base_params,
+                "text_detection_model_name": "PP-OCRv5_server_det",
+                "text_recognition_model_name": "PP-OCRv5_server_rec",
+                "use_angle_cls": True,
+            }
+        
+        if mode_str == "fast":
+            # Fast: PP-OCRv5_server (no angle classification for speed)
+            return {
+                **base_params,
+                "text_detection_model_name": "PP-OCRv5_server_det",
+                "text_recognition_model_name": "PP-OCRv5_server_rec",
+                "use_angle_cls": False,
+            }
+        
+        if mode_str == "superfast":
+            # Superfast: PP-OCRv3_mobile (lightweight models)
+            return {
+                **base_params,
+                "text_detection_model_name": "PP-OCRv3_mobile_det",
+                "text_recognition_model_name": "PP-OCRv3_mobile_rec",
+                "use_angle_cls": False,
+            }
+        
+        # Fallback: use server models
+        return {
+            **base_params,
+            "text_detection_model_name": "PP-OCRv5_server_det",
+            "text_recognition_model_name": "PP-OCRv5_server_rec",
+            "use_angle_cls": True,
+        }
 
     @Slot(str, int)
     def update_progress(self, message: str, value: int):
-        """Update the log text and progress bar."""
         self.log_text.appendPlainText(message)
         self.progress_bar.setValue(value)
 
@@ -393,357 +624,273 @@ class MainWindow(QMainWindow):
         """Handle the results from the OCR worker."""
         self.log_text.appendPlainText("Processing finished successfully.")
         self.worker = None
-        
-        # Store the original OCR result for real-time post-processing preview
-        self.original_ocr_result = layout_result
-        
-        self.ocr_result_text.setPlainText(layout_result)
-        self.postprocessed_text.setPlainText(post_result)
+        self.stop_button.setEnabled(False)
+        self.retry_button.setEnabled(True)
 
-        # Tab switching logic: only auto-switch in "table" mode
-        if self.mode_combo.currentText().lower() == 'table' and post_result:
-            self.tabs.setCurrentIndex(1)  # Switch to Post-processed tab
+        # Update raw result
+        self.raw_text.setPlainText(layout_result)
+
+        # Update post-processed result
+        self.post_text.setPlainText(post_result)
+
+        # Update table view if in table mode
+        if detected_mode == "table":
+            self._update_table_view(post_result)
+            self.results_tabs.setCurrentIndex(2)  # Switch to post-processed tab
         else:
-            # In "default" mode, stay on OCR Result tab (index 0)
-            self.tabs.setCurrentIndex(0)
+            self.results_tabs.setCurrentIndex(0)  # Switch to raw result tab
+
+    def _update_table_view(self, tsv_data: str):
+        """Update table widget with TSV data."""
+        lines = tsv_data.strip().split("\n")
+        if not lines:
+            return
+
+        # Parse TSV
+        rows = [line.split("\t") for line in lines]
+        max_cols = max(len(row) for row in rows)
+
+        # Set up table
+        self.table_widget.clear()
+        self.table_widget.setRowCount(len(rows))
+        self.table_widget.setColumnCount(max_cols)
+
+        # Fill data
+        for i, row in enumerate(rows):
+            for j, cell in enumerate(row):
+                item = QTableWidgetItem(cell)
+                self.table_widget.setItem(i, j, item)
+
+        # Resize columns
+        self.table_widget.resizeColumnsToContents()
 
     @Slot(str)
     def on_processing_error(self, error_message: str):
-        """Handle errors reported by the worker."""
+        """Handle processing error."""
+        self.log_text.appendPlainText(f"Error: {error_message}")
         self.worker = None
-        self.progress_bar.setValue(0)
-        self.log_text.appendPlainText(f"ERROR: {error_message}")
-        QMessageBox.critical(self, "Processing Error", error_message)
+        self.stop_button.setEnabled(False)
+        self.retry_button.setEnabled(True)
+
+        QMessageBox.critical(self, "Processing Error", f"An error occurred in the worker thread: {error_message}")
 
     @Slot()
-    def copy_to_clipboard(self):
-        """Copy the content of the currently visible tab to the clipboard."""
-        current_idx = self.tabs.currentIndex()
-        tab_name = self.tabs.tabText(current_idx)
-        clipboard = QGuiApplication.clipboard()
-        
-        # Check if we're on the Post-processed tab and need to apply copy strategy
-        if current_idx == 1 and self.current_settings.copy_strategy != "all":  # Post-processed tab
-            text_to_copy = self._get_postprocess_copy_text()
-            clipboard.setText(text_to_copy)
-            strategy_desc = {
-                "value_only": "values only",
-                "unit_only": "units only",
-                "all": "all content"
-            }.get(self.current_settings.copy_strategy, "all content")
-            self.log_text.appendPlainText(f"Copied {strategy_desc} from '{tab_name}' to clipboard.")
-        elif current_idx == 0:  # OCR Result tab
-            clipboard.setText(self.ocr_result_text.toPlainText())
-            self.log_text.appendPlainText(f"Copied content of '{tab_name}' to clipboard.")
-        elif current_idx == 1:  # Post-processed tab with "all" strategy
-            clipboard.setText(self.postprocessed_text.toPlainText())
-            self.log_text.appendPlainText(f"Copied content of '{tab_name}' to clipboard.")
-
-    def _get_postprocess_copy_text(self) -> str:
-        """Get text to copy based on copy_strategy setting.
-        When split_value_unit is True, the last column is the unit column.
-        """
-        text = self.postprocessed_text.toPlainText()
-        if not text or self.current_settings.copy_strategy == "all":
-            return text
-        
-        lines = text.strip().split('\n')
-        result_lines = []
-        
-        for line in lines:
-            cells = line.split('\t')
-            if not cells:
-                result_lines.append('')
-                continue
-                
-            if self.current_settings.copy_strategy == "value_only":
-                # Exclude the last column (unit column) if split_value_unit was applied
-                if self.current_settings.split_value_unit and len(cells) > 1:
-                    result_lines.append('\t'.join(cells[:-1]))
-                else:
-                    result_lines.append(line)
-            elif self.current_settings.copy_strategy == "unit_only":
-                # Only copy the last column (unit column) if split_value_unit was applied
-                if self.current_settings.split_value_unit and len(cells) > 1:
-                    result_lines.append(cells[-1])
-                else:
-                    result_lines.append('')  # No unit column available
-        
-        return '\n'.join(result_lines)
+    def on_processing_stopped(self):
+        """Handle stopped processing."""
+        self.log_text.appendPlainText("Processing stopped.")
+        self.worker = None
+        self.stop_button.setEnabled(False)
+        self.retry_button.setEnabled(True)
 
     @Slot()
-    def clear_all(self):
-        """Clear all output areas, including the log."""
-        self.log_text.appendPlainText("Clearing all fields.")
-        self.clear_results()
-        self.log_text.clear()
-
-    def clear_results(self):
-        """Clear only the result fields, not the log."""
-        self.image_label.setPixmap(QPixmap()) # Clear pixmap first
-        self.image_label.setText("Screenshot will appear here") # Then set text
-        self.ocr_result_text.clear()
-        self.postprocessed_text.clear()
-        self.original_ocr_result = ""  # Clear stored OCR result
-        self.progress_bar.setValue(0)
-        # Note: We don't reset mode_combo here to preserve user's mode selection
-
-    # ========== Hotkey Methods ==========
-
-    def load_hotkey_settings(self):
-        """Load hotkey settings from config file and register the hotkey."""
-        config_path = "config.json"
-        try:
-            import json
-            with open(config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                hotkey = data.get('screenshot_hotkey', 'ctrl+alt+s')
-        except (FileNotFoundError, json.JSONDecodeError):
-            hotkey = 'ctrl+alt+s'
-        
-        self.screenshot_hotkey = hotkey
-        self.hotkey_input.setText(hotkey)
-        self._register_hotkey_internal(hotkey)
-
-    def save_hotkey_settings(self):
-        """Save hotkey settings to config file."""
-        config_path = "config.json"
-        try:
-            import json
-            # Load existing config first
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                data = {}
-            
-            # Update hotkey
-            data['screenshot_hotkey'] = self.screenshot_hotkey
-            
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4)
-        except Exception as e:
-            self.log_text.appendPlainText(f"Failed to save hotkey settings: {e}")
-
-    def _register_hotkey_internal(self, hotkey_str: str) -> bool:
-        """Internal method to register the hotkey."""
-        if not hotkey_str or hotkey_str.strip() == '':
-            self.hotkey_status_label.setText("(Global: None)")
-            return False
-        
-        success = self.hotkey_mgr.register_screenshot_hotkey(hotkey_str)
-        if success:
-            formatted = hotkey_manager.HotkeyManager.format_hotkey_display(hotkey_str)
-            self.hotkey_status_label.setText(f"(Global: {formatted})")
-            self.log_text.appendPlainText(f"Global hotkey registered: {formatted}")
-            return True
+    def on_retry_clicked(self):
+        """Retry OCR on current image."""
+        if self.current_screenshot_path and os.path.exists(self.current_screenshot_path):
+            self.start_ocr(self.current_screenshot_path)
         else:
-            self.hotkey_status_label.setText("(Global: Failed)")
-            QMessageBox.warning(self, "Hotkey Error", 
-                f"Failed to register hotkey '{hotkey_str}'.\n"
-                "Please try a different combination (e.g., ctrl+alt+s, f1, ctrl+f12).")
-            return False
+            QMessageBox.warning(self, "No Image", "No image to retry. Please take a screenshot first.")
 
     @Slot()
-    def on_register_hotkey(self):
-        """Handle the Set Hotkey button click."""
-        hotkey_str = self.hotkey_input.text().strip()
-        
-        if not hotkey_str:
-            # Unregister if empty
-            self.hotkey_mgr.unregister_all()
-            self.screenshot_hotkey = ""
-            self.hotkey_status_label.setText("(Global: None)")
-            self.save_hotkey_settings()
-            self.log_text.appendPlainText("Global hotkey unregistered.")
-            return
-        
-        # Validate hotkey format
-        if not hotkey_manager.HotkeyManager.validate_hotkey(hotkey_str):
-            QMessageBox.warning(self, "Invalid Hotkey", 
-                f"Invalid hotkey format: '{hotkey_str}'\n"
-                "Examples: ctrl+alt+s, f1, ctrl+shift+a")
-            return
-        
-        # Register the hotkey
-        if self._register_hotkey_internal(hotkey_str):
-            self.screenshot_hotkey = hotkey_str
-            self.save_hotkey_settings()
+    def on_stop_clicked(self):
+        """Stop current processing immediately."""
+        if self.worker and self.worker.isRunning():
+            self.log_text.appendPlainText("Stopping... (OCR will complete in background)")
+            self.worker.stop()
+            # Don't clear self.worker here - let stopped signal handle it
+            self.stop_button.setEnabled(False)
 
     @Slot()
-    def on_hotkey_screenshot(self):
-        """Handle global hotkey press for screenshot."""
-        # Bring window to front if minimized
-        if self.isMinimized():
-            self.showNormal()
-        self.raise_()
-        self.activateWindow()
-        
-        self.log_text.appendPlainText("Global hotkey triggered: Screenshot")
-        self.start_screenshot()
-
-    # ========== Post-processing Methods ==========
-
-    def load_postprocess_settings(self):
-        """Load post-process settings from config file and update UI."""
-        self.current_settings = postprocess.load_config()
-        settings = self.current_settings
-        
-        # Update UI controls
-        self.threshold_checkbox.setChecked(settings.apply_threshold)
-        self.threshold_value_input.setText(settings.threshold_value)
-        replace_idx = 0 if settings.threshold_replace_with == "-" else 1
-        self.threshold_replace_combo.setCurrentIndex(replace_idx)
-        
-        self.unit_conv_checkbox.setChecked(settings.apply_unit_conversion)
-        # Map prefix to combo index: f,p,n,u,m,base,k,M,G -> 0,1,2,3,4,5,6,7,8
-        prefix_to_idx = {'f': 0, 'p': 1, 'n': 2, 'u': 3, 'm': 4, '': 5, 'k': 6, 'M': 7, 'G': 8}
-        unit_idx = prefix_to_idx.get(settings.target_unit_prefix, 5)
-        self.target_unit_combo.setCurrentIndex(unit_idx)
-        
-        self.split_checkbox.setChecked(settings.split_value_unit)
-        # Map notation style: "none", "scientific", "engineering"
-        notation_map = {'none': 0, 'scientific': 1, 'engineering': 2}
-        notation_idx = notation_map.get(settings.notation_style, 0)
-        self.notation_combo.setCurrentIndex(notation_idx)
-        
-        # Precision setting
-        self.precision_spinbox.setValue(settings.precision)
-        
-        # Map copy strategy: "all", "value_only", "unit_only"
-        strategy_map = {'all': 0, 'value_only': 1, 'unit_only': 2}
-        strategy_idx = strategy_map.get(settings.copy_strategy, 0)
-        self.copy_strategy_combo.setCurrentIndex(strategy_idx)
-        
-        self.log_text.appendPlainText("Post-process settings loaded.")
-
-    def load_settings(self):
-        """Load all settings including hotkey and post-process settings."""
-        self.load_hotkey_settings()
-        self.load_postprocess_settings()
-
-    def get_settings_from_ui(self) -> postprocess.PostprocessSettings:
-        """Extract settings from UI controls."""
-        settings = postprocess.PostprocessSettings()
-        
-        settings.apply_threshold = self.threshold_checkbox.isChecked()
-        settings.threshold_value = self.threshold_value_input.text()
-        settings.threshold_replace_with = self.threshold_replace_combo.currentText()
-        
-        settings.apply_unit_conversion = self.unit_conv_checkbox.isChecked()
-        # Map combo index to prefix
-        idx_to_prefix = {0: 'f', 1: 'p', 2: 'n', 3: 'u', 4: 'm', 5: '', 6: 'k', 7: 'M', 8: 'G'}
-        settings.target_unit_prefix = idx_to_prefix.get(self.target_unit_combo.currentIndex(), '')
-        
-        settings.split_value_unit = self.split_checkbox.isChecked()
-        # Map notation combo index to style (0: none, 1: scientific, 2: engineering)
-        notation_styles = {0: 'none', 1: 'scientific', 2: 'engineering'}
-        settings.notation_style = notation_styles.get(self.notation_combo.currentIndex(), 'none')
-        settings.apply_notation_conversion = (settings.notation_style != 'none')
-        
-        # Precision setting
-        settings.precision = self.precision_spinbox.value()
-        
-        # Map copy strategy combo index
-        copy_strategies = {0: 'all', 1: 'value_only', 2: 'unit_only'}
-        settings.copy_strategy = copy_strategies.get(self.copy_strategy_combo.currentIndex(), 'all')
-        
-        return settings
-
-    def update_postprocess_preview(self):
-        """Update the post-process preview based on current settings and original OCR result."""
-        if not self.original_ocr_result:
-            return
-
-        settings = self.get_settings_from_ui()
-        self.current_settings = settings
-
-        # Sanitize input from 'Default' mode before post-processing
-        input_text = self.original_ocr_result
-        current_mode = self.mode_combo.currentText().lower()
-        if current_mode == 'default':
-            # Replace multiple spaces with a single tab to create a TSV-like structure
-            input_text = "\n".join([re.sub(r' +', '\t', line).strip() for line in input_text.splitlines()])
-
-        # Always try to process the result (user can view preview on-demand)
-        try:
-            processed = postprocess.process_tsv(input_text, settings)
-            self.postprocessed_text.setPlainText(processed)
-        except Exception as e:
-            # If processing fails, show original with a note
-            self.log_text.appendPlainText(f"Post-processing preview error: {e}")
-            self.postprocessed_text.setPlainText(self.original_ocr_result)
+    def on_open_image(self):
+        """Open an image file for OCR."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tiff)"
+        )
+        if file_path:
+            # Display image
+            pixmap = QPixmap(file_path)
+            self.image_label.setPixmap(
+                pixmap.scaled(
+                    self.image_label.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+            )
+            self.current_screenshot_path = file_path
+            self.start_ocr(file_path)
 
     @Slot()
-    def on_postprocess_changed(self):
-        """Handle any post-processing control change - update preview in real-time."""
-        self.update_postprocess_preview()
+    def on_save_post_settings(self):
+        """Save post-processing settings."""
+        notation_map = {0: "none", 1: "scientific", 2: "engineering"}
+        copy_map = {0: "all", 1: "value_only", 2: "unit_only"}
+
+        settings = postprocess.PostprocessSettings(
+            apply_threshold=self.threshold_check.isChecked(),
+            threshold_value=self.threshold_value.text(),
+            threshold_replace_with=self.threshold_replace.text(),
+            apply_unit_conversion=self.unit_conv_check.isChecked(),
+            target_unit_prefix=self.target_unit.currentText(),
+            split_value_unit=self.split_check.isChecked(),
+            notation_style=notation_map.get(self.notation_combo.currentIndex(), "none"),
+            precision=self.precision_spin.value(),
+            copy_strategy=copy_map.get(self.copy_combo.currentIndex(), "all"),
+        )
+
+        postprocess.save_config(settings)
+        self.log_text.appendPlainText("Post-processing settings saved.")
+
+    def copy_to_clipboard(self, text: str):
+        """Copy text to clipboard."""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        self.log_text.appendPlainText("Copied to clipboard.")
+
+    def copy_table_as_tsv(self):
+        """Copy table content as TSV."""
+        rows = []
+        for i in range(self.table_widget.rowCount()):
+            row = []
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                row.append(item.text() if item else "")
+            rows.append("\t".join(row))
+
+        tsv_text = "\n".join(rows)
+        self.copy_to_clipboard(tsv_text)
 
     @Slot()
-    def on_generate_postprocess(self):
-        """Manually trigger post-processing preview generation.
-        
-        This is useful in 'default' mode where auto post-processing is skipped.
-        In 'table' mode, this re-generates the preview with current settings.
-        """
-        if not self.original_ocr_result:
-            self.log_text.appendPlainText("No OCR result to process. Please take a screenshot first.")
-            return
-        
-        self.log_text.appendPlainText("Generating post-process preview...")
-        self.update_postprocess_preview()
-        self.log_text.appendPlainText("Post-process preview generated.")
+    def on_configure_hotkey(self):
+        """Open hotkey configuration dialog."""
+        dialog = HotkeyConfigDialog(self, self.hotkey_manager)
+        if dialog.exec():
+            new_hotkey = dialog.get_hotkey()
+            if self.hotkey_manager:
+                # Unregister old hotkey
+                self.hotkey_manager.unregister_all()
+                # Register new hotkey
+                if self.hotkey_manager.register_hotkey(new_hotkey):
+                    # Save to config
+                    config = postprocess.load_config()
+                    config.screenshot_hotkey = new_hotkey
+                    postprocess.save_config(config)
+                    self.log_text.appendPlainText(f"Hotkey changed to: {new_hotkey}")
+                else:
+                    QMessageBox.warning(self, "Error", f"Failed to register hotkey: {new_hotkey}")
 
     @Slot()
-    def on_apply_postprocess_settings(self):
-        """Apply current settings and save to config file."""
-        self.current_settings = self.get_settings_from_ui()
-        try:
-            postprocess.save_config(self.current_settings)
-            self.log_text.appendPlainText("Post-process settings saved.")
-            self.update_postprocess_preview()
-        except Exception as e:
-            self.log_text.appendPlainText(f"Failed to save settings: {e}")
-            QMessageBox.warning(self, "Save Error", f"Failed to save settings: {e}")
-
-    @Slot()
-    def on_reset_postprocess_settings(self):
-        """Reset post-process settings to default."""
-        self.current_settings = postprocess.PostprocessSettings()
-        try:
-            postprocess.save_config(self.current_settings)
-            self.load_postprocess_settings()
-            self.update_postprocess_preview()
-            self.log_text.appendPlainText("Post-process settings reset to default.")
-        except Exception as e:
-            self.log_text.appendPlainText(f"Failed to reset settings: {e}")
-    
-    def resizeEvent(self, event):
-        """Handle window resize to scale the image preview."""
-        if isinstance(self.image_label.pixmap(), QPixmap) and not self.image_label.pixmap().isNull():
-            self.image_label.setPixmap(self.image_label.pixmap().scaled(
-                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        super().resizeEvent(event)
+    def on_about(self):
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About Work_OCR",
+            "<h2>Work_OCR</h2>"
+            "<p>A desktop OCR application for extracting text and tables from screenshots.</p>"
+            "<p>Powered by PaddleOCR and PySide6.</p>"
+        )
 
     def closeEvent(self, event):
-        """Ensure the worker thread is terminated and hotkeys are unregistered before closing."""
+        """Handle window close event."""
+        # Clean up temp files
+        if self.current_screenshot_path and os.path.exists(self.current_screenshot_path):
+            try:
+                os.remove(self.current_screenshot_path)
+            except Exception:
+                pass
+
+        # Stop worker
         if self.worker and self.worker.isRunning():
-            self.log_text.appendPlainText("Attempting to stop active processing...")
-            self.worker.terminate()
-            self.worker.wait()
-        
-        # Unregister global hotkeys
-        self.hotkey_mgr.stop()
-        
+            self.worker.stop()
+
+        # Unregister hotkeys
+        if self.hotkey_manager:
+            self.hotkey_manager.unregister_all()
+
         event.accept()
 
+
+class HotkeyConfigDialog(QDialog):
+    """Dialog for configuring global hotkey."""
+
+    def __init__(self, parent=None, hotkey_manager=None):
+        super().__init__(parent)
+        self.hotkey_manager = hotkey_manager
+        self.setWindowTitle("Configure Hotkey")
+        self.setModal(True)
+        self.setMinimumWidth(300)
+
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        layout.addWidget(QLabel("Enter a hotkey combination (e.g., 'ctrl+alt+s', 'f1'):"))
+
+        # Hotkey input
+        self.hotkey_input = QLineEdit()
+        config = postprocess.load_config()
+        self.hotkey_input.setText(config.screenshot_hotkey)
+        layout.addWidget(self.hotkey_input)
+
+        # Validation label
+        self.validation_label = QLabel()
+        self.validation_label.setStyleSheet("color: red;")
+        layout.addWidget(self.validation_label)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self.test_hotkey)
+        btn_layout.addWidget(self.test_btn)
+        
+        btn_layout.addStretch()
+        
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.validate_and_accept)
+        btn_layout.addWidget(self.ok_btn)
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(btn_layout)
+
+    def test_hotkey(self):
+        """Test if hotkey format is valid."""
+        hotkey = self.hotkey_input.text().strip()
+        if self.hotkey_manager:
+            is_valid = self.hotkey_manager.validate_hotkey(hotkey)
+            if is_valid:
+                self.validation_label.setText("✓ Valid hotkey format")
+                self.validation_label.setStyleSheet("color: green;")
+            else:
+                self.validation_label.setText("✗ Invalid hotkey format")
+                self.validation_label.setStyleSheet("color: red;")
+
+    def validate_and_accept(self):
+        """Validate hotkey and accept dialog."""
+        hotkey = self.hotkey_input.text().strip()
+        if not hotkey:
+            self.validation_label.setText("Hotkey cannot be empty")
+            return
+        self.accept()
+
+    def get_hotkey(self) -> str:
+        """Get the configured hotkey."""
+        return self.hotkey_input.text().strip()
+
+
 def main():
-    """Main entry point for the Work OCR application."""
+    """Main entry point."""
     app = QApplication(sys.argv)
+    app.setApplicationName("Work_OCR")
+    
+    # Set application style
+    app.setStyle("Fusion")
+    
     window = MainWindow()
     window.show()
-    return app.exec()
+    
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

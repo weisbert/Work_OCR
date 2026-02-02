@@ -6,7 +6,6 @@ It can reconstruct text into a structured table (TSV) or plain text with layout 
 
 import re
 from typing import List, Tuple, Dict, Any, Union
-import numpy as np
 
 # Define a type for a single OCR item, which includes the bounding box, text, and score.
 # Bbox can be List[List[int]] (four points) or List[int] (x1, y1, x2, y2).
@@ -81,17 +80,13 @@ def detect_mode(ocr_result: OcrResult, col_threshold_ratio: float = 0.7) -> str:
     return "text"
 
 
-import numpy as np
-
-def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5, col_threshold_ratio: float = 0.7) -> str:
+def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5) -> str:
     """
-    Reconstructs OCR results into a TSV (Tab-Separated Values) string using a
-    vertical projection histogram for robust column detection.
-
+    Reconstructs OCR results into a TSV (Tab-Separated Values) string.
+    
     Args:
         ocr_result: The list of OCR items from the OCR engine.
         row_height_ratio: Multiplier for average height to determine row clustering tolerance.
-        col_threshold_ratio: Ratio for thresholding projection histogram peaks.
 
     Returns:
         A string formatted as TSV.
@@ -100,11 +95,11 @@ def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5, col_
         return ""
 
     items = [{'text': item[1][0], 'norm_bbox': normalize_bbox(item[0])} for item in ocr_result]
-
+    
     if not items:
         return ""
 
-    # 1. Row Clustering (same as before)
+    # 1. Row Clustering
     avg_h = sum(it['norm_bbox']['h'] for it in items) / len(items)
     row_y_tolerance = avg_h * row_height_ratio
     
@@ -114,6 +109,7 @@ def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5, col_
     if items:
         current_row = [items[0]]
         for item in items[1:]:
+            # If item's vertical center is close to the current row's average, add it
             avg_row_y = sum(i['norm_bbox']['cy'] for i in current_row) / len(current_row)
             if abs(item['norm_bbox']['cy'] - avg_row_y) < row_y_tolerance:
                 current_row.append(item)
@@ -122,68 +118,55 @@ def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5, col_
                 current_row = [item]
         rows.append(sorted(current_row, key=lambda x: x['norm_bbox']['cx']))
 
-    # 2. Column Identification using Vertical Projection
-    max_x = max(it['norm_bbox']['x2'] for it in items)
-    projection = np.zeros(int(max_x) + 1)
-
-    for item in items:
-        bbox = item['norm_bbox']
-        for x in range(int(bbox['x1']), int(bbox['x2'])):
-            projection[x] += 1
-            
-    # Find column centers by looking for peaks in the projection
-    avg_w = sum(it['norm_bbox']['w'] for it in items) / len(items)
-    threshold = np.max(projection) * col_threshold_ratio
-
-    in_peak = False
-    peaks = []
-    for i in range(len(projection)):
-        if projection[i] > threshold and not in_peak:
-            in_peak = True
-            peaks.append(i)
-        elif projection[i] < threshold and in_peak:
-            in_peak = False
-
-    # Find the center of each peak
-    col_centers = []
-    for i in range(len(peaks) - 1):
-        if peaks[i+1] - peaks[i] > avg_w: # Heuristic to separate close peaks
-            peak_region = projection[peaks[i]:peaks[i+1]]
-            center = peaks[i] + np.argmax(peak_region)
-            col_centers.append(center)
-    if peaks: # Add the last peak
-        peak_region = projection[peaks[-1]:]
-        center = peaks[-1] + np.argmax(peak_region)
-        col_centers.append(center)
-        
-    # Deduplicate and sort column centers
-    unique_cols = []
-    if col_centers:
-        unique_cols.append(col_centers[0])
-        for center in col_centers[1:]:
-            if all(abs(center - uc) > avg_w for uc in unique_cols):
-                unique_cols.append(center)
-    col_centers = sorted(unique_cols)
+    # 2. Column Identification
+    all_x_centers = sorted([it['norm_bbox']['cx'] for it in items])
     
-    num_cols = len(col_centers)
-    if num_cols == 0:
-        return reconstruct_text(ocr_result) # Fallback to text reconstruction
+    col_boundaries = []
+    if all_x_centers:
+        col_boundaries.append(all_x_centers[0])
+        for i in range(1, len(all_x_centers)):
+            # A significant gap suggests a new column
+            # Use a threshold based on average item width
+            avg_w = sum(it['norm_bbox']['w'] for it in items) / len(items)
+            if (all_x_centers[i] - all_x_centers[i-1]) > avg_w:
+                 col_boundaries.append(all_x_centers[i])
+
+    # Deduplicate column boundaries
+    unique_cols = []
+    if col_boundaries:
+        unique_cols.append(col_boundaries[0])
+        for x in col_boundaries[1:]:
+            # Check if this new boundary is too close to the last one
+            is_new_col = True
+            for uc in unique_cols:
+                if abs(x - uc) < avg_h: # Use avg_h as it's a stable measure
+                   is_new_col = False
+                   break
+            if is_new_col:
+                unique_cols.append(x)
+    
+    col_boundaries = sorted(unique_cols)
 
     # 3. Grid Construction & Cell Placement
-    grid = [["" for _ in range(num_cols)] for _ in rows]
-
+    grid = [["" for _ in col_boundaries] for _ in rows]
+    
     for i, row in enumerate(rows):
         for item in row:
-            # Find which column this item belongs to by finding the nearest column center
-            cx = item['norm_bbox']['cx']
-            distances = [abs(cx - center) for center in col_centers]
-            col_idx = np.argmin(distances)
+            # Find which column this item belongs to
+            col_idx = -1
+            min_dist = float('inf')
+            for j, col_x in enumerate(col_boundaries):
+                dist = abs(item['norm_bbox']['cx'] - col_x)
+                if dist < min_dist:
+                    min_dist = dist
+                    col_idx = j
             
-            # Append text to the cell, separated by space if multiple items fall in one cell
-            if grid[i][col_idx]:
-                grid[i][col_idx] += " " + item['text']
-            else:
-                grid[i][col_idx] = item['text']
+            if col_idx != -1:
+                # Append text to the cell, separated by space if multiple items fall in one cell
+                if grid[i][col_idx]:
+                    grid[i][col_idx] += " " + item['text']
+                else:
+                    grid[i][col_idx] = item['text']
 
     # 4. TSV Generation
     return "\n".join("\t".join(row) for row in grid)
