@@ -44,7 +44,7 @@ class OCREngine:
         lang: str = "ch",
         use_angle_cls: bool = True,
         logger: Optional[Any] = None,
-        padding: int = 10,
+        padding: int = 20,
     ) -> None:
         self.lang = lang
         self.use_angle_cls = use_angle_cls

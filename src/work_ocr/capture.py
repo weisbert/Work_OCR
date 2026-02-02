@@ -27,7 +27,13 @@ class CaptureWindow(QWidget):
         self.setGeometry(virtual_geometry)
 
         # 捕获整个虚拟桌面
-        self._background_pixmap = self._screen.grabWindow(0)
+        self._background_pixmap = self._screen.grabWindow(
+            0,
+            virtual_geometry.x(),
+            virtual_geometry.y(),
+            virtual_geometry.width(),
+            virtual_geometry.height()
+        )
         
         self._is_selecting = False
         self._start_point = None
