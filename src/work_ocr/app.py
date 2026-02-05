@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.current_settings = postprocess.PostprocessSettings()  # Current post-process settings
         self.hotkey_mgr = hotkey_manager.HotkeyManager()  # Global hotkey manager
         self.screenshot_hotkey = "ctrl+alt+s"  # Default hotkey
+        self.current_image_path = "" # Store the path of the last processed image
         
         self.setup_ui()
         self.connect_signals()
@@ -139,6 +140,8 @@ class MainWindow(QMainWindow):
         self.screenshot_button = QPushButton("Screenshot")
         self.copy_button = QPushButton("Copy")
         self.clear_button = QPushButton("Clear")
+        self.ocr_retry_button = QPushButton("OCR Retry") # New button
+        self.ocr_retry_button.setEnabled(False) # Initially disabled
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Default", "Table"])
         
@@ -152,6 +155,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.screenshot_button)
         controls_layout.addWidget(self.copy_button)
         controls_layout.addWidget(self.clear_button)
+        controls_layout.addWidget(self.ocr_retry_button) # Add new button here
         controls_layout.addStretch()
         controls_layout.addWidget(QLabel("Mode:"))
         controls_layout.addWidget(self.mode_combo)
@@ -274,6 +278,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.clicked.connect(self.start_screenshot)
         self.copy_button.clicked.connect(self.copy_to_clipboard)
         self.clear_button.clicked.connect(self.clear_all)
+        self.ocr_retry_button.clicked.connect(self.on_ocr_retry)
         
         # Hotkey signals
         self.hotkey_register_btn.clicked.connect(self.on_register_hotkey)
@@ -360,7 +365,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_screenshot_finished(self, image_path: str):
-        """Callback slot for when screen capture is finished."""
+        """Callback slot for when screen capture is finished or OCR retry is requested."""
         if image_path and self.worker is None:
             self.log_text.appendPlainText(f"Screenshot saved to {image_path}")
             self.clear_results()
@@ -379,8 +384,22 @@ class MainWindow(QMainWindow):
             self.worker.error.connect(self.on_processing_error)
             self.worker.finished.connect(self.worker.deleteLater)
             self.worker.start()
+            self.ocr_retry_button.setEnabled(False) # Disable retry button during processing
         elif self.worker is not None and self.worker.isRunning():
              self.log_text.appendPlainText("Processing is already in progress.")
+        elif not image_path:
+            self.log_text.appendPlainText("No image path provided for OCR.")
+
+    @Slot()
+    def on_ocr_retry(self):
+        """Re-runs OCR on the last captured image."""
+        if not self.current_image_path:
+            self.log_text.appendPlainText("No previous image to retry OCR on. Please take a screenshot first.")
+            QMessageBox.information(self, "OCR Retry", "No previous image found. Please take a screenshot first.")
+            return
+
+        self.log_text.appendPlainText(f"Retrying OCR on {self.current_image_path}...")
+        self.on_screenshot_finished(self.current_image_path)
 
     @Slot(str, int)
     def update_progress(self, message: str, value: int):
@@ -393,9 +412,11 @@ class MainWindow(QMainWindow):
         """Handle the results from the OCR worker."""
         self.log_text.appendPlainText("Processing finished successfully.")
         self.worker = None
+        self.ocr_retry_button.setEnabled(True) # Re-enable retry button
         
         # Store the original OCR result for real-time post-processing preview
         self.original_ocr_result = layout_result
+        self.current_image_path = image_path # Store the path of the last processed image
         
         self.ocr_result_text.setPlainText(layout_result)
         self.postprocessed_text.setPlainText(post_result)
@@ -414,6 +435,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.log_text.appendPlainText(f"ERROR: {error_message}")
         QMessageBox.critical(self, "Processing Error", error_message)
+        self.ocr_retry_button.setEnabled(True) # Re-enable retry button on error
 
     @Slot()
     def copy_to_clipboard(self):
