@@ -80,7 +80,7 @@ def detect_mode(ocr_result: OcrResult, col_threshold_ratio: float = 0.7) -> str:
     return "text"
 
 
-def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5) -> str:
+def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5, col_gap_threshold_ratio: float = 1.0, horizontal_merge_threshold_ratio: float = 0.5) -> str:
     """
     Reconstructs OCR results into a TSV (Tab-Separated Values) string.
     
@@ -98,6 +98,11 @@ def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5) -> s
     
     if not items:
         return ""
+
+    # Calculate average character width for general use
+    total_text_len = sum(len(it['text']) for it in items)
+    total_width = sum(it['norm_bbox']['w'] for it in items)
+    avg_char_w = total_width / total_text_len if total_text_len > 0 else 10 # Default if no text
 
     # 1. Row Clustering
     avg_h = sum(it['norm_bbox']['h'] for it in items) / len(items)
@@ -118,17 +123,43 @@ def reconstruct_table(ocr_result: OcrResult, row_height_ratio: float = 0.5) -> s
                 current_row = [item]
         rows.append(sorted(current_row, key=lambda x: x['norm_bbox']['cx']))
 
+    # 1.5 Horizontal Merging within Rows
+    merged_rows = []
+    for row in rows:
+        if not row:
+            merged_rows.append([])
+            continue
+
+        current_merged_row = [row[0]]
+        for i in range(1, len(row)):
+            prev_item = current_merged_row[-1]
+            current_item = row[i]
+
+            gap = current_item['norm_bbox']['x1'] - prev_item['norm_bbox']['x2']
+
+            if gap < (avg_char_w * horizontal_merge_threshold_ratio) and gap > - (avg_char_w * horizontal_merge_threshold_ratio): # Allow for slight overlaps or very small gaps
+                # Merge current_item into prev_item
+                prev_item['text'] += " " + current_item['text']
+                # Update bbox to encompass both
+                prev_item['norm_bbox']['x2'] = max(prev_item['norm_bbox']['x2'], current_item['norm_bbox']['x2'])
+                prev_item['norm_bbox']['w'] = prev_item['norm_bbox']['x2'] - prev_item['norm_bbox']['x1']
+                # Recalculate center
+                prev_item['norm_bbox']['cx'] = prev_item['norm_bbox']['x1'] + prev_item['norm_bbox']['w'] / 2
+            else:
+                current_merged_row.append(current_item)
+        merged_rows.append(current_merged_row)
+    rows = merged_rows
+
     # 2. Column Identification
-    all_x_centers = sorted([it['norm_bbox']['cx'] for it in items])
+    all_x_centers = sorted([it['norm_bbox']['cx'] for row in rows for it in row])
     
     col_boundaries = []
     if all_x_centers:
         col_boundaries.append(all_x_centers[0])
         for i in range(1, len(all_x_centers)):
             # A significant gap suggests a new column
-            # Use a threshold based on average item width
-            avg_w = sum(it['norm_bbox']['w'] for it in items) / len(items)
-            if (all_x_centers[i] - all_x_centers[i-1]) > avg_w:
+            # Use a threshold based on average character width and col_gap_threshold_ratio
+            if (all_x_centers[i] - all_x_centers[i-1]) > (avg_char_w * col_gap_threshold_ratio):
                  col_boundaries.append(all_x_centers[i])
 
     # Deduplicate column boundaries
@@ -283,7 +314,8 @@ def _add_list_markers_by_indent(ocr_result: OcrResult, text: str) -> str:
              for item in ocr_result]
     
     min_x1 = min(it['norm_bbox']['x1'] for it in items)
-    avg_char_w = sum(it['norm_bbox']['w'] / max(len(it['text']), 1) for it in items) / len(items)
+    items_with_text = [it for it in items if it['text']]
+    avg_char_w = sum(it['norm_bbox']['w'] / len(it['text']) for it in items_with_text) / len(items_with_text) if items_with_text else 10
     indent_threshold = avg_char_w * 2
     
     lines = text.split('\n')

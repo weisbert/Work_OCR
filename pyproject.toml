@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [
     {name = "Work OCR Team"}
 ]
-keywords = ["ocr", "paddleocr", "table-extraction", "screenshot", "pyside6"]
+keywords = ["ocr", "rapidocr", "table-extraction", "screenshot", "pyside6"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
@@ -25,8 +25,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "paddlepaddle==3.2.0",
-    "paddleocr==3.4.0",
+    "rapidocr-onnxruntime",
     "PySide6>=6.0",
     "opencv-contrib-python>=4.0",
     "numpy>=1.20",

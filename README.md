@@ -1,6 +1,6 @@
 # Work OCR
 
-一款基于 PaddleOCR (CPU-only) 的桌面 OCR 工具，专为 Windows 11 设计，专注于表格数据提取和文本识别。
+一款基于 RapidOCR (ONNX Runtime) 的桌面 OCR 工具，专为 Windows 11 设计，专注于表格数据提取和文本识别。
 
 ![Python Version](https://img.shields.io/badge/python-3.11-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey.svg)
@@ -49,7 +49,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-> **注意**: 首次运行 PaddleOCR 会自动下载模型文件，可能需要一些时间。
+> **注意**: 首次运行 RapidOCR 会自动下载模型文件，可能需要一些时间。
 
 ## 使用方法
 
@@ -120,7 +120,7 @@ Work_OCR/
 │       ├── __main__.py     # 模块入口
 │       ├── app.py          # 主应用程序
 │       ├── capture.py      # 截图功能
-│       ├── ocr_engine.py   # PaddleOCR 封装
+│       ├── ocr_engine.py   # RapidOCR 封装
 │       ├── layout.py       # 布局分析
 │       ├── postprocess.py  # 表格后处理
 │       └── hotkey_manager.py  # 全局热键管理
@@ -173,7 +173,7 @@ pytest -v
 | 组件 | 技术 |
 |------|------|
 | GUI 框架 | PySide6 |
-| OCR 引擎 | PaddleOCR 3.4.0 + PaddlePaddle 3.2.0 (CPU) |
+| OCR 引擎 | RapidOCR (ONNX Runtime) |
 | 图像处理 | OpenCV, Pillow |
 | 全局热键 | keyboard |
 | 测试框架 | pytest, pytest-qt |
@@ -199,15 +199,15 @@ pytest -v
 
 ## 注意事项
 
-1. **首次运行**: PaddleOCR 需要下载模型文件，请保持网络连接
-2. **CPU 性能**: 大尺寸图片 OCR 可能需要较长时间，建议在 log 面板查看进度
+1. **首次运行**: RapidOCR 需要下载模型文件，请保持网络连接
+2. **CPU 性能**: RapidOCR 基于 ONNX Runtime，在 CPU 上有很好的性能表现。
 3. **全局热键冲突**: 如果注册失败，请尝试其他快捷键组合
 4. **截图权限**: 确保应用有屏幕捕获权限
 
 ## 常见问题
 
 **Q: OCR 识别速度慢怎么办？**  
-A: 这是正常现象，CPU-only 模式下 PaddleOCR 处理大图需要时间。可以尝试缩小截图区域。
+A: RapidOCR 速度相对较快。如果感觉慢，可以尝试缩小截图区域，或者检查后台是否有其他高 CPU 占用的程序。
 
 **Q: 表格识别不准确怎么办？**  
 A: 表格结构恢复是启发式算法，复杂布局可能不准确。识别结果可手动编辑。

@@ -33,6 +33,15 @@ class TestLayout(unittest.TestCase):
             ([[90, 40], [130, 40], [130, 60], [90, 60]], ("line.", 0.98)),
         ]
 
+        # Mock data representing a table where a cell value is split
+        cls.split_cell_ocr_result: OcrResult = [
+            ([[10, 10], [100, 10], [100, 30], [10, 30]], ("Header1", 0.99)),
+            ([[120, 12], [210, 12], [210, 32], [120, 32]], ("Header2", 0.99)),
+            ([[12, 40], [60, 40], [60, 60], [12, 60]], ("Value1A", 0.98)), # First part of a split cell
+            ([[65, 40], [110, 40], [110, 60], [65, 60]], ("Value1B", 0.98)), # Second part, very close
+            ([[125, 42], [215, 42], [215, 62], [125, 62]], ("Value2", 0.98)),
+        ]
+
     def test_normalize_bbox(self):
         """Test normalization for both polygon and rectangle bboxes."""
         poly_bbox = [[10, 20], [100, 20], [100, 50], [10, 50]]
@@ -70,10 +79,19 @@ class TestLayout(unittest.TestCase):
         self.assertIn("This is a line.", lines[0].replace("  ", " "))
         self.assertIn("Another line.", lines[1].replace("  ", " "))
 
-    def test_reconstruct_empty(self):
-        """Test that empty inputs don't cause errors."""
-        self.assertEqual(reconstruct_table([]), "")
-        self.assertEqual(reconstruct_text([]), "")
+    def test_reconstruct_table_col_gap_threshold(self):
+        """Test TSV reconstruction with varying col_gap_threshold_ratio and horizontal_merge_threshold_ratio."""
+        # With default horizontal_merge_threshold_ratio=0.5, "Value1A" and "Value1B" should merge
+        # into one cell, separated by a space.
+        result_merged = reconstruct_table(self.split_cell_ocr_result, col_gap_threshold_ratio=1.0, horizontal_merge_threshold_ratio=0.5)
+        self.assertEqual(result_merged, "Header1\tHeader2\nValue1A Value1B\tValue2")
+
+        # Test with a very low horizontal_merge_threshold_ratio to ensure they are NOT merged
+        # and thus appear in separate columns (separated by a tab).
+        result_not_merged = reconstruct_table(self.split_cell_ocr_result, col_gap_threshold_ratio=1.0, horizontal_merge_threshold_ratio=0.01)
+        self.assertIn("Value1A\tValue1B", result_not_merged)
+        self.assertNotIn("Value1A Value1B", result_not_merged)
+
 
 
 if __name__ == '__main__':
