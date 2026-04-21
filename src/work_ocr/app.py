@@ -214,60 +214,68 @@ class MainWindow(QMainWindow):
         control_group = QGroupBox("Table Post-processing Settings")
         control_layout = QGridLayout(control_group)
         
-        # Row 0: Threshold Replacement
+        # Row 0: Replace non-numeric text cells
+        self.replace_text_checkbox = QCheckBox("Replace text cells with:")
+        self.replace_text_combo = QComboBox()
+        self.replace_text_combo.addItems(["-", "0"])
+
+        control_layout.addWidget(self.replace_text_checkbox, 0, 0)
+        control_layout.addWidget(self.replace_text_combo, 0, 1)
+
+        # Row 1: Threshold Replacement
         self.threshold_checkbox = QCheckBox("Enable Threshold Replacement")
         self.threshold_value_input = QLineEdit("5n")
         self.threshold_value_input.setPlaceholderText("e.g., 5n, 10u, 0.1m")
         self.threshold_replace_combo = QComboBox()
         self.threshold_replace_combo.addItems(["-", "0"])
-        
-        control_layout.addWidget(self.threshold_checkbox, 0, 0)
-        control_layout.addWidget(QLabel("Threshold:"), 0, 1)
-        control_layout.addWidget(self.threshold_value_input, 0, 2)
-        control_layout.addWidget(QLabel("Replace with:"), 0, 3)
-        control_layout.addWidget(self.threshold_replace_combo, 0, 4)
-        
-        # Row 1: Unit Conversion
+
+        control_layout.addWidget(self.threshold_checkbox, 1, 0)
+        control_layout.addWidget(QLabel("Threshold:"), 1, 1)
+        control_layout.addWidget(self.threshold_value_input, 1, 2)
+        control_layout.addWidget(QLabel("Replace with:"), 1, 3)
+        control_layout.addWidget(self.threshold_replace_combo, 1, 4)
+
+        # Row 2: Unit Conversion
         self.unit_conv_checkbox = QCheckBox("Enable Unit Unification")
         self.target_unit_combo = QComboBox()
-        self.target_unit_combo.addItems(["f (1e-15)", "p (1e-12)", "n (1e-9)", "u (1e-6)", 
+        self.target_unit_combo.addItems(["f (1e-15)", "p (1e-12)", "n (1e-9)", "u (1e-6)",
                                          "m (1e-3)", "base (1e0)", "k (1e3)", "M (1e6)", "G (1e9)"])
         self.target_unit_combo.setCurrentIndex(3)  # Default to 'u'
-        
-        control_layout.addWidget(self.unit_conv_checkbox, 1, 0)
-        control_layout.addWidget(QLabel("Target Unit:"), 1, 1)
-        control_layout.addWidget(self.target_unit_combo, 1, 2)
-        
-        # Row 2: Value/Unit Split and Notation
+
+        control_layout.addWidget(self.unit_conv_checkbox, 2, 0)
+        control_layout.addWidget(QLabel("Target Unit:"), 2, 1)
+        control_layout.addWidget(self.target_unit_combo, 2, 2)
+
+        # Row 3: Value/Unit Split and Notation
         self.split_checkbox = QCheckBox("Split Value and Unit")
         self.notation_combo = QComboBox()
-        self.notation_combo.addItems(["None", "Scientific (e.g., 1.00E-05)", 
+        self.notation_combo.addItems(["None", "Scientific (e.g., 1.00E-05)",
                                       "Engineering (e.g., 10.00E-06)"])
-        
-        control_layout.addWidget(self.split_checkbox, 2, 0)
-        control_layout.addWidget(QLabel("Notation:"), 2, 1)
-        control_layout.addWidget(self.notation_combo, 2, 2)
-        
+
+        control_layout.addWidget(self.split_checkbox, 3, 0)
+        control_layout.addWidget(QLabel("Notation:"), 3, 1)
+        control_layout.addWidget(self.notation_combo, 3, 2)
+
         # Precision setting
         self.precision_spinbox = QSpinBox()
         self.precision_spinbox.setRange(1, 15)
         self.precision_spinbox.setValue(6)
         self.precision_spinbox.setSuffix(" digits")
-        control_layout.addWidget(QLabel("Precision:"), 2, 3)
-        control_layout.addWidget(self.precision_spinbox, 2, 4)
-        
-        # Row 3: Copy Strategy and Buttons
+        control_layout.addWidget(QLabel("Precision:"), 3, 3)
+        control_layout.addWidget(self.precision_spinbox, 3, 4)
+
+        # Row 4: Copy Strategy and Buttons
         self.copy_strategy_combo = QComboBox()
         self.copy_strategy_combo.addItems(["Copy All", "Copy Values Only", "Copy Units Only"])
         self.generate_button = QPushButton("Generate Preview")
         self.apply_button = QPushButton("Apply & Save Settings")
         self.reset_button = QPushButton("Reset to Default")
-        
-        control_layout.addWidget(QLabel("Copy Strategy:"), 3, 0)
-        control_layout.addWidget(self.copy_strategy_combo, 3, 1, 1, 2)
-        control_layout.addWidget(self.generate_button, 3, 3)
-        control_layout.addWidget(self.apply_button, 3, 4)
-        control_layout.addWidget(self.reset_button, 3, 5)
+
+        control_layout.addWidget(QLabel("Copy Strategy:"), 4, 0)
+        control_layout.addWidget(self.copy_strategy_combo, 4, 1, 1, 2)
+        control_layout.addWidget(self.generate_button, 4, 3)
+        control_layout.addWidget(self.apply_button, 4, 4)
+        control_layout.addWidget(self.reset_button, 4, 5)
         
         # Set column stretch
         control_layout.setColumnStretch(2, 1)
@@ -304,6 +312,8 @@ class MainWindow(QMainWindow):
         self.reset_button.clicked.connect(self.on_reset_postprocess_settings)
 
         # Real-time preview on any control change
+        self.replace_text_checkbox.stateChanged.connect(self.on_postprocess_changed)
+        self.replace_text_combo.currentIndexChanged.connect(self.on_postprocess_changed)
         self.threshold_checkbox.stateChanged.connect(self.on_postprocess_changed)
         self.threshold_value_input.textChanged.connect(self.on_postprocess_changed)
         self.threshold_replace_combo.currentIndexChanged.connect(self.on_postprocess_changed)
@@ -610,6 +620,10 @@ class MainWindow(QMainWindow):
         settings = self.current_settings
         
         # Update UI controls
+        self.replace_text_checkbox.setChecked(settings.replace_text_cells)
+        replace_text_idx = 0 if settings.replace_text_with == "-" else 1
+        self.replace_text_combo.setCurrentIndex(replace_text_idx)
+
         self.threshold_checkbox.setChecked(settings.apply_threshold)
         self.threshold_value_input.setText(settings.threshold_value)
         replace_idx = 0 if settings.threshold_replace_with == "-" else 1
@@ -646,6 +660,9 @@ class MainWindow(QMainWindow):
         """Extract settings from UI controls."""
         settings = postprocess.PostprocessSettings()
         
+        settings.replace_text_cells = self.replace_text_checkbox.isChecked()
+        settings.replace_text_with = self.replace_text_combo.currentText()
+
         settings.apply_threshold = self.threshold_checkbox.isChecked()
         settings.threshold_value = self.threshold_value_input.text()
         settings.threshold_replace_with = self.threshold_replace_combo.currentText()

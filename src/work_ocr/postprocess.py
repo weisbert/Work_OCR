@@ -57,8 +57,11 @@ class PostprocessSettings:
     
     split_value_unit: bool = False
     copy_strategy: str = "all" # "all", "value_only", "unit_only"
-    
+
     precision: int = 6  # Number of significant digits for display
+
+    replace_text_cells: bool = False
+    replace_text_with: str = "-"  # "-" or "0"
 
 
 def format_decimal(value: Decimal, precision: int | None = None) -> str:
@@ -284,11 +287,19 @@ def process_tsv(tsv_text: str, settings: PostprocessSettings) -> str:
             # 1. Parse
             parsed = parse_cell(cell)
 
-            # 2. Apply Threshold
+            # 2. Replace non-numeric text cells (before threshold so the replacement flows through)
+            if (
+                settings.replace_text_cells
+                and parsed.numeric_value is None
+                and not parsed.is_special
+            ):
+                parsed = parse_cell(settings.replace_text_with)
+
+            # 3. Apply Threshold
             if settings.apply_threshold:
                 parsed = apply_threshold(parsed, settings.threshold_value, settings.threshold_replace_with)
 
-            # 3. Unit Conversion (always applied if target unit is set, for split mode)
+            # 4. Unit Conversion (always applied if target unit is set, for split mode)
             if settings.apply_unit_conversion and not parsed.is_special:
                  parsed = convert_unit(parsed, settings.target_unit_prefix)
 
@@ -302,14 +313,14 @@ def process_tsv(tsv_text: str, settings: PostprocessSettings) -> str:
             final_str = parsed.format(settings.precision)
 
             if not parsed.is_special and parsed.numeric_value is not None:
-                # 4. Notation Conversion (applied after other transforms)
+                # 5. Notation Conversion (applied after other transforms)
                 if settings.apply_notation_conversion:
                     if settings.notation_style == "scientific":
                         final_str = to_scientific(parsed, settings.precision)
                     elif settings.notation_style == "engineering":
                         final_str = to_engineering(parsed, settings.precision)
-                
-                # 5. Splitting Value and Unit - format as number only (no unit)
+
+                # 6. Splitting Value and Unit - format as number only (no unit)
                 if settings.split_value_unit:
                     if settings.apply_notation_conversion:
                         # Already formatted with notation, keep as is
@@ -320,7 +331,7 @@ def process_tsv(tsv_text: str, settings: PostprocessSettings) -> str:
 
             processed_cells.append(final_str)
         
-        # 6. Append unit column only when there is a meaningful unit to show
+        # 7. Append unit column only when there is a meaningful unit to show
         _has_unit_col = (
             settings.split_value_unit
             and settings.apply_unit_conversion

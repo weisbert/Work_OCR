@@ -171,6 +171,38 @@ class TestPostprocess(unittest.TestCase):
             self.assertEqual(len(line.split('\t')), 3, f"expected 3 cols, got: {line!r}")
         self.assertEqual(lines[-1].split('\t'), ["-151.3", "-147.8", "-144.2"])
 
+    def test_replace_text_cells_dash(self):
+        """M3: non-numeric cells become '-' when replace_text_cells is on; numeric/special untouched."""
+        settings = PostprocessSettings(replace_text_cells=True, replace_text_with="-")
+        # Empty cell placed mid-row so process_tsv's .strip() doesn't chew the trailing tab.
+        tsv_in = "eval err\t10u\tabc\t\t-4.2\t-"
+        out = process_tsv(tsv_in, settings)
+        cells = out.split('\t')
+        self.assertEqual(cells[0], "-")      # "eval err" -> "-"
+        self.assertEqual(cells[1], "10u")    # numeric with prefix preserved
+        self.assertEqual(cells[2], "-")      # "abc" -> "-"
+        self.assertEqual(cells[3], "-")      # empty cell -> "-"
+        self.assertEqual(cells[4], "-4.2")   # negative float preserved
+        self.assertEqual(cells[5], "-")      # already special
+
+    def test_replace_text_cells_zero(self):
+        """M3: when replace_text_with='0', non-numeric cells become numeric 0 so downstream math works."""
+        settings = PostprocessSettings(replace_text_cells=True, replace_text_with="0")
+        tsv_in = "N/A\t10u"
+        out = process_tsv(tsv_in, settings)
+        cells = out.split('\t')
+        self.assertEqual(cells[0], "0")
+        self.assertEqual(cells[1], "10u")
+
+    def test_replace_text_cells_off_leaves_text(self):
+        """M3: without the flag, non-numeric strings pass through as original."""
+        settings = PostprocessSettings(replace_text_cells=False)
+        tsv_in = "eval err\t10u"
+        out = process_tsv(tsv_in, settings)
+        cells = out.split('\t')
+        self.assertEqual(cells[0], "eval err")
+        self.assertEqual(cells[1], "10u")
+
     def test_copy_value_only_preserves_last_cell(self):
         """Bug B: copy_strategy='value_only' with no unit column must keep all data columns."""
         tsv_in = (
