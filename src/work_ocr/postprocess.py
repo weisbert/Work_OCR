@@ -331,15 +331,23 @@ def process_tsv(tsv_text: str, settings: PostprocessSettings) -> str:
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> PostprocessSettings:
     """Loads settings from a JSON file."""
     try:
+        from dataclasses import fields as dc_fields
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return PostprocessSettings(**data)
+        known = {f.name for f in dc_fields(PostprocessSettings)}
+        filtered = {k: v for k, v in data.items() if k in known}
+        return PostprocessSettings(**filtered)
     except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        # Return default settings if file is missing, corrupt, or has wrong keys
         return PostprocessSettings()
 
 def save_config(settings: PostprocessSettings, path: str = DEFAULT_CONFIG_PATH):
-    """Saves settings to a JSON file."""
+    """Saves settings to a JSON file, preserving unrelated keys."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    data.update(settings.__dict__)
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(settings.__dict__, f, indent=4)
+        json.dump(data, f, indent=4)
 

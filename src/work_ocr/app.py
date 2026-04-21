@@ -70,7 +70,7 @@ class OcrWorker(QThread):
                 detected_mode = "table"
                 layout_result = layout.reconstruct_table(ocr_result)
             else:
-                detected_mode = "default"
+                detected_mode = "text"
                 layout_result = layout.reconstruct_text_with_postprocess(ocr_result)
             layout_time = time.time()
             self.progress.emit(f"Layout analysis finished in {layout_time - ocr_time:.2f}s.", int(4 / total_steps * 100))
@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.capture_window = None
         self.original_ocr_result = ""  # Store raw OCR result for real-time preview
+        self._raw_ocr_text = ""  # Store raw text-mode OCR result for separator re-application
         self.current_settings = postprocess.PostprocessSettings()  # Current post-process settings
         self.hotkey_mgr = hotkey_manager.HotkeyManager()  # Global hotkey manager
         self.screenshot_hotkey = "ctrl+alt+s"  # Default hotkey
@@ -143,7 +144,15 @@ class MainWindow(QMainWindow):
         self.ocr_retry_button = QPushButton("OCR Retry") # New button
         self.ocr_retry_button.setEnabled(False) # Initially disabled
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Default", "Table"])
+        self.mode_combo.addItems(["Text", "Table"])
+
+        self.text_separator_combo = QComboBox()
+        self.text_separator_combo.addItem("Keep spacing", None)
+        self.text_separator_combo.addItem("Tab", "\t")
+        self.text_separator_combo.addItem("Single space", " ")
+        self.text_separator_combo.addItem("Two spaces", "  ")
+        self.text_separator_combo.addItem("Four spaces", "    ")
+        self.text_separator_combo.setVisible(False)
         
         # Hotkey setting
         self.hotkey_input = QLineEdit()
@@ -159,6 +168,7 @@ class MainWindow(QMainWindow):
         controls_layout.addStretch()
         controls_layout.addWidget(QLabel("Mode:"))
         controls_layout.addWidget(self.mode_combo)
+        controls_layout.addWidget(self.text_separator_combo)
         controls_layout.addWidget(QLabel("Hotkey:"))
         controls_layout.addWidget(self.hotkey_input)
         controls_layout.addWidget(self.hotkey_register_btn)
@@ -279,16 +289,20 @@ class MainWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_to_clipboard)
         self.clear_button.clicked.connect(self.clear_all)
         self.ocr_retry_button.clicked.connect(self.on_ocr_retry)
-        
+
+        # Mode and text separator signals
+        self.mode_combo.currentTextChanged.connect(self._sync_mode_dependent_ui)
+        self.text_separator_combo.currentIndexChanged.connect(self.on_text_separator_changed)
+
         # Hotkey signals
         self.hotkey_register_btn.clicked.connect(self.on_register_hotkey)
         self.hotkey_mgr.screenshot_hotkey_pressed.connect(self.on_hotkey_screenshot)
-        
+
         # Post-processing control signals
         self.generate_button.clicked.connect(self.on_generate_postprocess)
         self.apply_button.clicked.connect(self.on_apply_postprocess_settings)
         self.reset_button.clicked.connect(self.on_reset_postprocess_settings)
-        
+
         # Real-time preview on any control change
         self.threshold_checkbox.stateChanged.connect(self.on_postprocess_changed)
         self.threshold_value_input.textChanged.connect(self.on_postprocess_changed)
@@ -299,6 +313,9 @@ class MainWindow(QMainWindow):
         self.notation_combo.currentIndexChanged.connect(self.on_postprocess_changed)
         self.precision_spinbox.valueChanged.connect(self.on_postprocess_changed)
         self.copy_strategy_combo.currentIndexChanged.connect(self.on_postprocess_changed)
+
+        # Sync initial UI state based on default mode
+        self._sync_mode_dependent_ui()
 
     def initialize_engines(self):
         """Initialize backend modules."""
@@ -416,9 +433,14 @@ class MainWindow(QMainWindow):
         
         # Store the original OCR result for real-time post-processing preview
         self.original_ocr_result = layout_result
-        self.current_image_path = image_path # Store the path of the last processed image
-        
-        self.ocr_result_text.setPlainText(layout_result)
+        self._raw_ocr_text = layout_result
+        self.current_image_path = image_path
+
+        if self.mode_combo.currentText() == "Text":
+            sep = self.text_separator_combo.currentData()
+            self.ocr_result_text.setPlainText(self._apply_text_separator(layout_result, sep))
+        else:
+            self.ocr_result_text.setPlainText(layout_result)
         self.postprocessed_text.setPlainText(post_result)
 
         # Tab switching logic: only auto-switch in "table" mode
@@ -502,46 +524,49 @@ class MainWindow(QMainWindow):
 
     def clear_results(self):
         """Clear only the result fields, not the log."""
-        self.image_label.setPixmap(QPixmap()) # Clear pixmap first
-        self.image_label.setText("Screenshot will appear here") # Then set text
+        self.image_label.setPixmap(QPixmap())
+        self.image_label.setText("Screenshot will appear here")
         self.ocr_result_text.clear()
         self.postprocessed_text.clear()
-        self.original_ocr_result = ""  # Clear stored OCR result
+        self.original_ocr_result = ""
+        self._raw_ocr_text = ""
         self.progress_bar.setValue(0)
         # Note: We don't reset mode_combo here to preserve user's mode selection
 
     # ========== Hotkey Methods ==========
 
     def load_hotkey_settings(self):
-        """Load hotkey settings from config file and register the hotkey."""
+        """Load hotkey and app-level settings from config file."""
         config_path = "config.json"
         try:
             import json
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                hotkey = data.get('screenshot_hotkey', 'ctrl+alt+s')
+            hotkey = data.get('screenshot_hotkey', 'ctrl+alt+s')
+            text_sep_idx = data.get('text_separator_index', 0)
         except (FileNotFoundError, json.JSONDecodeError):
             hotkey = 'ctrl+alt+s'
-        
+            text_sep_idx = 0
+
         self.screenshot_hotkey = hotkey
         self.hotkey_input.setText(hotkey)
         self._register_hotkey_internal(hotkey)
+        self.text_separator_combo.setCurrentIndex(text_sep_idx)
 
     def save_hotkey_settings(self):
-        """Save hotkey settings to config file."""
+        """Save hotkey and app-level settings to config file."""
         config_path = "config.json"
         try:
             import json
-            # Load existing config first
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {}
-            
-            # Update hotkey
+
             data['screenshot_hotkey'] = self.screenshot_hotkey
-            
+            data['text_separator_index'] = self.text_separator_combo.currentIndex()
+
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
@@ -672,6 +697,27 @@ class MainWindow(QMainWindow):
         
         return settings
 
+    def _sync_mode_dependent_ui(self):
+        """Enable/disable widgets that depend on the current OCR mode."""
+        is_text = self.mode_combo.currentText() == "Text"
+        self.postprocess_widget.setEnabled(not is_text)
+        self.text_separator_combo.setVisible(is_text)
+
+    def _apply_text_separator(self, raw: str, sep) -> str:
+        """Apply a uniform separator to each line of text-mode OCR output."""
+        if sep is None:
+            return raw
+        return "\n".join(re.sub(r'[ \t]+', sep, line) for line in raw.splitlines())
+
+    @Slot()
+    def on_text_separator_changed(self):
+        """Re-apply the chosen separator when the user changes the dropdown."""
+        if not self._raw_ocr_text:
+            return
+        sep = self.text_separator_combo.currentData()
+        self.ocr_result_text.setPlainText(self._apply_text_separator(self._raw_ocr_text, sep))
+        self.save_hotkey_settings()
+
     def update_postprocess_preview(self):
         """Update the post-process preview based on current settings and original OCR result."""
         if not self.original_ocr_result:
@@ -680,12 +726,7 @@ class MainWindow(QMainWindow):
         settings = self.get_settings_from_ui()
         self.current_settings = settings
 
-        # Sanitize input from 'Default' mode before post-processing
         input_text = self.original_ocr_result
-        current_mode = self.mode_combo.currentText().lower()
-        if current_mode == 'default':
-            # Replace multiple spaces with a single tab to create a TSV-like structure
-            input_text = "\n".join([re.sub(r' +', '\t', line).strip() for line in input_text.splitlines()])
 
         # Always try to process the result (user can view preview on-demand)
         try:

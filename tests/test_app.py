@@ -96,30 +96,30 @@ class TestAppLogic(unittest.TestCase):
         # Return plain text without tabs (not table data)
         mock_reconstruct_text_with_postprocess.return_value = "This is plain text\nwithout any table structure"
 
-        # 2. Initialize and run the worker in 'default' mode
-        worker = OcrWorker("dummy_path_text.png", "default", mock_ocr)
+        # 2. Initialize and run the worker in 'text' mode
+        worker = OcrWorker("dummy_path_text.png", "text", mock_ocr)
         finished_slot, error_slot, progress_slot = MagicMock(), MagicMock(), MagicMock()
         worker.finished.connect(finished_slot)
         worker.error.connect(error_slot)
         worker.progress.connect(progress_slot)
-        
+
         worker.run()
 
         # 3. Assertions
         mock_ocr.recognize.assert_called_once_with("dummy_path_text.png")
         mock_reconstruct_text_with_postprocess.assert_called_once_with("raw ocr data")
-        
-        mock_load_config.assert_not_called() # Should not load config for plain text
-        mock_process_tsv.assert_not_called() # Should not process TSV for plain text
-        mock_reconstruct_table.assert_not_called() # Should not be called in default mode
-        
+
+        mock_load_config.assert_not_called()
+        mock_process_tsv.assert_not_called()
+        mock_reconstruct_table.assert_not_called()
+
         error_slot.assert_not_called()
         self.assertGreaterEqual(progress_slot.call_count, 4)
-        
+
         finished_slot.assert_called_once_with(
-            "This is plain text\nwithout any table structure", 
-            "", # Post-processed result should be empty for plain text
-            "default", 
+            "This is plain text\nwithout any table structure",
+            "",
+            "text",
             "dummy_path_text.png"
         )
 
@@ -140,32 +140,30 @@ class TestAppLogic(unittest.TestCase):
         # Return table data with tabs - but should NOT be auto-processed
         mock_reconstruct_text_with_postprocess.return_value = "col1\tcol2\nval1\tval2"
 
-        # 2. Initialize and run the worker in 'default' mode
-        worker = OcrWorker("dummy_path_table.png", "default", mock_ocr)
+        # 2. Initialize and run the worker in 'text' mode
+        worker = OcrWorker("dummy_path_table.png", "text", mock_ocr)
         finished_slot, error_slot, progress_slot = MagicMock(), MagicMock(), MagicMock()
         worker.finished.connect(finished_slot)
         worker.error.connect(error_slot)
         worker.progress.connect(progress_slot)
-        
+
         worker.run()
 
         # 3. Assertions
         mock_ocr.recognize.assert_called_once_with("dummy_path_table.png")
         mock_reconstruct_text_with_postprocess.assert_called_once_with("raw ocr data")
-        
-        # Should NOT auto post-process in default mode
+
         mock_load_config.assert_not_called()
         mock_process_tsv.assert_not_called()
         mock_reconstruct_table.assert_not_called()
-        
+
         error_slot.assert_not_called()
         self.assertGreaterEqual(progress_slot.call_count, 4)
-        
-        # Post-processed result should be empty - user can trigger it on-demand
+
         finished_slot.assert_called_once_with(
-            "col1\tcol2\nval1\tval2", 
-            "", # Post-processed result should be EMPTY in default mode
-            "default", 
+            "col1\tcol2\nval1\tval2",
+            "",
+            "text",
             "dummy_path_table.png"
         )
 
@@ -235,13 +233,12 @@ class TestAppLogic(unittest.TestCase):
         Even if the content looks like a table, should stay on OCR Result tab.
         """
         window = MainWindow()
-        window.mode_combo.setCurrentText("Default") # Start in default mode
+        window.mode_combo.setCurrentText("Text")
 
-        # Simulate the worker finishing with table-like content
         window.on_processing_finished(
             layout_result="col1\tcol2\nval1\tval2",
             post_result="",
-            detected_mode="default",
+            detected_mode="text",
             image_path="dummy.png"
         )
 
