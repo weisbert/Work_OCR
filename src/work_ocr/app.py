@@ -484,36 +484,9 @@ class MainWindow(QMainWindow):
             self.log_text.appendPlainText(f"Copied content of '{tab_name}' to clipboard.")
 
     def _get_postprocess_copy_text(self) -> str:
-        """Get text to copy based on copy_strategy setting.
-        When split_value_unit is True, the last column is the unit column.
-        """
+        """Get text to copy based on copy_strategy setting."""
         text = self.postprocessed_text.toPlainText()
-        if not text or self.current_settings.copy_strategy == "all":
-            return text
-        
-        lines = text.strip().split('\n')
-        result_lines = []
-        
-        for line in lines:
-            cells = line.split('\t')
-            if not cells:
-                result_lines.append('')
-                continue
-                
-            if self.current_settings.copy_strategy == "value_only":
-                # Exclude the last column (unit column) if split_value_unit was applied
-                if self.current_settings.split_value_unit and len(cells) > 1:
-                    result_lines.append('\t'.join(cells[:-1]))
-                else:
-                    result_lines.append(line)
-            elif self.current_settings.copy_strategy == "unit_only":
-                # Only copy the last column (unit column) if split_value_unit was applied
-                if self.current_settings.split_value_unit and len(cells) > 1:
-                    result_lines.append(cells[-1])
-                else:
-                    result_lines.append('')  # No unit column available
-        
-        return '\n'.join(result_lines)
+        return postprocess.filter_copy_strategy(text, self.current_settings)
 
     @Slot()
     def clear_all(self):

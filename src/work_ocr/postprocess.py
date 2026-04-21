@@ -320,13 +320,49 @@ def process_tsv(tsv_text: str, settings: PostprocessSettings) -> str:
 
             processed_cells.append(final_str)
         
-        # 6. Append unit column if split_value_unit is enabled
-        if settings.split_value_unit:
+        # 6. Append unit column only when there is a meaningful unit to show
+        _has_unit_col = (
+            settings.split_value_unit
+            and settings.apply_unit_conversion
+            and settings.target_unit_prefix
+        )
+        if _has_unit_col:
             processed_cells.append(row_unit)
-        
+
         processed_lines.append('\t'.join(processed_cells))
 
     return '\n'.join(processed_lines)
+
+def filter_copy_strategy(tsv_text: str, settings: PostprocessSettings) -> str:
+    """Return a filtered TSV based on copy_strategy, using the same _has_unit_col logic as process_tsv."""
+    if not tsv_text or settings.copy_strategy == "all":
+        return tsv_text
+
+    _has_unit_col = (
+        settings.split_value_unit
+        and settings.apply_unit_conversion
+        and settings.target_unit_prefix
+    )
+
+    lines = tsv_text.strip().split('\n')
+    result_lines = []
+    for line in lines:
+        cells = line.split('\t')
+        if not cells:
+            result_lines.append('')
+            continue
+        if settings.copy_strategy == "value_only":
+            if _has_unit_col and len(cells) > 1:
+                result_lines.append('\t'.join(cells[:-1]))
+            else:
+                result_lines.append(line)
+        elif settings.copy_strategy == "unit_only":
+            if _has_unit_col and len(cells) > 1:
+                result_lines.append(cells[-1])
+            else:
+                result_lines.append('')
+    return '\n'.join(result_lines)
+
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> PostprocessSettings:
     """Loads settings from a JSON file."""

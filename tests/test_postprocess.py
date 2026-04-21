@@ -9,6 +9,7 @@ from work_ocr.postprocess import (
     to_engineering,
     sci_to_prefix,
     process_tsv,
+    filter_copy_strategy,
     PostprocessSettings
 )
 
@@ -147,6 +148,50 @@ class TestPostprocess(unittest.TestCase):
         tsv_thresh_in = "1n\t10n"
         tsv_thresh_out = process_tsv(tsv_thresh_in, settings_thresh)
         self.assertEqual(tsv_thresh_out, "REPLACED\t10n")
+
+    def test_split_without_unit_conversion_no_extra_column(self):
+        """Bug A: split_value_unit=True but apply_unit_conversion=False must NOT append an empty column."""
+        tsv_in = (
+            "-136.8\t-132.7\t-129\n"
+            "-141.3\t-137.4\t-133.6\n"
+            "-146.2\t-142.3\t-138.6\n"
+            "-150.4\t-146.8\t-142.9\n"
+            "-151.3\t-147.8\t-144.2"
+        )
+        settings = PostprocessSettings(
+            apply_threshold=False,
+            apply_unit_conversion=False,
+            split_value_unit=True,
+            copy_strategy="value_only",
+        )
+        out = process_tsv(tsv_in, settings)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 5)
+        for line in lines:
+            self.assertEqual(len(line.split('\t')), 3, f"expected 3 cols, got: {line!r}")
+        self.assertEqual(lines[-1].split('\t'), ["-151.3", "-147.8", "-144.2"])
+
+    def test_copy_value_only_preserves_last_cell(self):
+        """Bug B: copy_strategy='value_only' with no unit column must keep all data columns."""
+        tsv_in = (
+            "-136.8\t-132.7\t-129\n"
+            "-141.3\t-137.4\t-133.6\n"
+            "-146.2\t-142.3\t-138.6\n"
+            "-150.4\t-146.8\t-142.9\n"
+            "-151.3\t-147.8\t-144.2"
+        )
+        settings = PostprocessSettings(
+            apply_threshold=False,
+            apply_unit_conversion=False,
+            split_value_unit=True,
+            copy_strategy="value_only",
+        )
+        processed = process_tsv(tsv_in, settings)
+        result = filter_copy_strategy(processed, settings)
+        last_row = result.strip().splitlines()[-1].split('\t')
+        self.assertIn("-144.2", last_row)
+        self.assertEqual(len(last_row), 3)
+
 
 if __name__ == '__main__':
     unittest.main()
