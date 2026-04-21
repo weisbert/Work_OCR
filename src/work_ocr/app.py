@@ -35,7 +35,7 @@ class OcrWorker(QThread):
     Signals:
         progress (str, int): Emits progress updates with a message and a percentage value.
         finished (str, str, str, str): Emits when processing is complete, sending
-                                       layout_result, post_result, detected_mode, and image_path.
+                                       layout_result, post_result, mode, and image_path.
         error (str): Emits when an error occurs during processing.
     """
     progress = Signal(str, int)
@@ -67,19 +67,17 @@ class OcrWorker(QThread):
             # Steps 3-4: Analyze Layout
             update_progress(3, "Analyzing layout...")
             if self.mode == "table":
-                detected_mode = "table"
                 layout_result = layout.reconstruct_table(ocr_result)
             else:
-                detected_mode = "text"
                 layout_result = layout.reconstruct_text_with_postprocess(ocr_result)
             layout_time = time.time()
             self.progress.emit(f"Layout analysis finished in {layout_time - ocr_time:.2f}s.", int(4 / total_steps * 100))
 
             # Steps 5-6: Post-process Table
             post_result = ""
-            # Only auto post-process in 'table' mode
-            # In 'default' mode, post-processing is done on-demand when user switches tab
-            if detected_mode == 'table':
+            # Only auto post-process in 'table' mode; text mode defers to the
+            # Post-processed tab's on-demand Generate button.
+            if self.mode == 'table':
                 update_progress(5, "Loading post-processor settings...")
                 settings = postprocess.load_config()
                 update_progress(6, "Post-processing table...")
@@ -87,14 +85,14 @@ class OcrWorker(QThread):
                 post_time = time.time()
                 self.progress.emit(f"Post-processing finished in {post_time - layout_time:.2f}s.", int(6 / total_steps * 100))
             else:
-                update_progress(6, "Skipping auto post-processing in default mode.")
+                update_progress(6, "Skipping auto post-processing in text mode.")
 
             # Steps 7-8: Finalize
             update_progress(7, "Finalizing results...")
             end_time = time.time()
             update_progress(8, f"Total processing time: {end_time - start_time:.2f}s.")
 
-            self.finished.emit(layout_result, post_result, detected_mode, self.image_path)
+            self.finished.emit(layout_result, post_result, self.mode, self.image_path)
 
         except Exception as e:
             self.error.emit(f"An error occurred in the worker thread: {str(e)}")
@@ -493,29 +491,30 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
 
     @Slot(str, str, str, str)
-    def on_processing_finished(self, layout_result: str, post_result: str, detected_mode: str, image_path: str):
+    def on_processing_finished(self, layout_result: str, post_result: str, mode: str, image_path: str):
         """Handle the results from the OCR worker."""
         self.log_text.appendPlainText("Processing finished successfully.")
         self.worker = None
         self.ocr_retry_button.setEnabled(True) # Re-enable retry button
-        
+
         # Store the original OCR result for real-time post-processing preview
         self.original_ocr_result = layout_result
         self._raw_ocr_text = layout_result
         self.current_image_path = image_path
 
-        if self.mode_combo.currentText() == "Text":
+        # Use the mode the worker actually ran with (robust if the user toggled mode_combo mid-OCR).
+        if mode == "text":
             sep = self.text_separator_combo.currentData()
             self.ocr_result_text.setPlainText(self._apply_text_separator(layout_result, sep))
         else:
             self.ocr_result_text.setPlainText(layout_result)
         self.postprocessed_text.setPlainText(post_result)
 
-        # Tab switching logic: only auto-switch in "table" mode
-        if self.mode_combo.currentText().lower() == 'table' and post_result:
-            self.tabs.setCurrentIndex(1)  # Switch to Post-processed tab
+        # Auto-switch to Post-processed only when table mode produced output;
+        # text mode stays on OCR Result.
+        if mode == "table" and post_result:
+            self.tabs.setCurrentIndex(1)
         else:
-            # In "default" mode, stay on OCR Result tab (index 0)
             self.tabs.setCurrentIndex(0)
 
     @Slot(str)

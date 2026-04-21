@@ -177,7 +177,7 @@ class TestAppLogic(unittest.TestCase):
         mock_ocr.recognize.side_effect = ValueError("OCR engine failed")
 
         # 2. Initialize and run the worker
-        worker = OcrWorker("dummy_path.png", "default", mock_ocr)
+        worker = OcrWorker("dummy_path.png", "text", mock_ocr)
         finished_slot = MagicMock()
         error_slot = MagicMock()
         worker.finished.connect(finished_slot)
@@ -209,7 +209,7 @@ class TestAppLogic(unittest.TestCase):
         window.on_processing_finished(
             layout_result="col1\tcol2\nval1\tval2",
             post_result="processed_col1\tprocessed_col2",
-            detected_mode="table",
+            mode="table",
             image_path="dummy.png"
         )
 
@@ -238,7 +238,7 @@ class TestAppLogic(unittest.TestCase):
         window.on_processing_finished(
             layout_result="col1\tcol2\nval1\tval2",
             post_result="",
-            detected_mode="text",
+            mode="text",
             image_path="dummy.png"
         )
 
