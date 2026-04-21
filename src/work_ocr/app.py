@@ -13,12 +13,12 @@ import os       # Moved from on_screenshot_captured
 import re
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QTabWidget, QProgressBar,
+    QPushButton, QToolButton, QMenu, QLabel, QTextEdit, QTabWidget, QProgressBar,
     QPlainTextEdit, QComboBox, QSplitter, QMessageBox,
     QGroupBox, QCheckBox, QLineEdit, QGridLayout, QSpinBox
 )
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QPixmap, QGuiApplication
+from PySide6.QtGui import QAction, QPixmap, QGuiApplication
 
 # Import project modules
 from . import capture
@@ -117,7 +117,14 @@ class MainWindow(QMainWindow):
         self.hotkey_mgr = hotkey_manager.HotkeyManager()  # Global hotkey manager
         self.screenshot_hotkey = "ctrl+alt+s"  # Default hotkey
         self.current_image_path = "" # Store the path of the last processed image
-        
+        self.hide_main_on_capture = True  # M6.1: persisted via config.json
+
+        # M6.2: debounce postprocess preview updates (cheap controls fire stateChanged rapidly)
+        self._postprocess_debounce = QTimer(self)
+        self._postprocess_debounce.setSingleShot(True)
+        self._postprocess_debounce.setInterval(200)
+        self._postprocess_debounce.timeout.connect(self.update_postprocess_preview)
+
         self.setup_ui()
         self.connect_signals()
         self.load_settings()
@@ -139,7 +146,28 @@ class MainWindow(QMainWindow):
         # Top Controls
         controls_layout = QHBoxLayout()
         self.screenshot_button = QPushButton("Screenshot")
-        self.copy_button = QPushButton("Copy")
+
+        # Copy button: QToolButton with a dropdown menu of strategies (M6.3).
+        # Default action is sticky so repeated clicks reuse the last-chosen strategy.
+        self.copy_button = QToolButton()
+        self.copy_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.copy_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self._copy_menu = QMenu(self.copy_button)
+        self._copy_actions = {}
+        for label, strategy in [
+            ("Copy All", "all"),
+            ("Copy Values", "value_only"),
+            ("Copy Units", "unit_only"),
+        ]:
+            action = QAction(label, self)
+            action.triggered.connect(
+                lambda _checked=False, s=strategy, a=action: self._do_copy(s, a)
+            )
+            self._copy_menu.addAction(action)
+            self._copy_actions[strategy] = action
+        self.copy_button.setMenu(self._copy_menu)
+        self.copy_button.setDefaultAction(self._copy_actions["all"])
+
         self.clear_button = QPushButton("Clear")
         self.ocr_retry_button = QPushButton("OCR Retry") # New button
         self.ocr_retry_button.setEnabled(False) # Initially disabled
@@ -153,14 +181,18 @@ class MainWindow(QMainWindow):
         self.text_separator_combo.addItem("Two spaces", "  ")
         self.text_separator_combo.addItem("Four spaces", "    ")
         self.text_separator_combo.setVisible(False)
-        
+
+        # Hide-main-on-capture toggle (M6.1)
+        self.hide_main_checkbox = QCheckBox("Hide on capture")
+        self.hide_main_checkbox.setChecked(True)
+
         # Hotkey setting
         self.hotkey_input = QLineEdit()
         self.hotkey_input.setPlaceholderText("e.g., ctrl+alt+s")
         self.hotkey_input.setMaximumWidth(120)
         self.hotkey_register_btn = QPushButton("Set Hotkey")
         self.hotkey_status_label = QLabel("(Global: None)")
-        
+
         controls_layout.addWidget(self.screenshot_button)
         controls_layout.addWidget(self.copy_button)
         controls_layout.addWidget(self.clear_button)
@@ -169,6 +201,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(QLabel("Mode:"))
         controls_layout.addWidget(self.mode_combo)
         controls_layout.addWidget(self.text_separator_combo)
+        controls_layout.addWidget(self.hide_main_checkbox)
         controls_layout.addWidget(QLabel("Hotkey:"))
         controls_layout.addWidget(self.hotkey_input)
         controls_layout.addWidget(self.hotkey_register_btn)
@@ -264,15 +297,11 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(QLabel("Precision:"), 3, 3)
         control_layout.addWidget(self.precision_spinbox, 3, 4)
 
-        # Row 4: Copy Strategy and Buttons
-        self.copy_strategy_combo = QComboBox()
-        self.copy_strategy_combo.addItems(["Copy All", "Copy Values Only", "Copy Units Only"])
+        # Row 4: Action Buttons (Copy strategy moved to top Copy QToolButton, see M6.3)
         self.generate_button = QPushButton("Generate Preview")
         self.apply_button = QPushButton("Apply & Save Settings")
         self.reset_button = QPushButton("Reset to Default")
 
-        control_layout.addWidget(QLabel("Copy Strategy:"), 4, 0)
-        control_layout.addWidget(self.copy_strategy_combo, 4, 1, 1, 2)
         control_layout.addWidget(self.generate_button, 4, 3)
         control_layout.addWidget(self.apply_button, 4, 4)
         control_layout.addWidget(self.reset_button, 4, 5)
@@ -294,9 +323,10 @@ class MainWindow(QMainWindow):
     def connect_signals(self):
         """Connect UI element signals to corresponding slots."""
         self.screenshot_button.clicked.connect(self.start_screenshot)
-        self.copy_button.clicked.connect(self.copy_to_clipboard)
+        # copy_button fires its defaultAction on body-click; _do_copy handles both body and menu.
         self.clear_button.clicked.connect(self.clear_all)
         self.ocr_retry_button.clicked.connect(self.on_ocr_retry)
+        self.hide_main_checkbox.toggled.connect(self._on_hide_main_toggled)
 
         # Mode and text separator signals
         self.mode_combo.currentTextChanged.connect(self._sync_mode_dependent_ui)
@@ -322,7 +352,6 @@ class MainWindow(QMainWindow):
         self.split_checkbox.stateChanged.connect(self.on_postprocess_changed)
         self.notation_combo.currentIndexChanged.connect(self.on_postprocess_changed)
         self.precision_spinbox.valueChanged.connect(self.on_postprocess_changed)
-        self.copy_strategy_combo.currentIndexChanged.connect(self.on_postprocess_changed)
 
         # Sync initial UI state based on default mode
         self._sync_mode_dependent_ui()
@@ -365,8 +394,9 @@ class MainWindow(QMainWindow):
         vg = screen.virtualGeometry()
         pixmap = screen.grabWindow(0, vg.x(), vg.y(), vg.width(), vg.height())
 
-        # 2. Hide main window (M6 will make this configurable).
-        self.hide()
+        # 2. Hide main window if the user wants it out of the way (M6.1).
+        if self.hide_main_on_capture:
+            self.hide()
 
         # 3. Show overlay with the frozen pixmap after one event loop tick
         #    so the hide() actually completes painting before the overlay appears.
@@ -555,14 +585,21 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             hotkey = data.get('screenshot_hotkey', 'ctrl+alt+s')
             text_sep_idx = data.get('text_separator_index', 0)
+            hide_main = data.get('hide_main_on_capture', True)
         except (FileNotFoundError, json.JSONDecodeError):
             hotkey = 'ctrl+alt+s'
             text_sep_idx = 0
+            hide_main = True
 
         self.screenshot_hotkey = hotkey
         self.hotkey_input.setText(hotkey)
         self._register_hotkey_internal(hotkey)
         self.text_separator_combo.setCurrentIndex(text_sep_idx)
+        self.hide_main_on_capture = bool(hide_main)
+        # Avoid triggering the toggled signal -> re-save on initial load.
+        self.hide_main_checkbox.blockSignals(True)
+        self.hide_main_checkbox.setChecked(self.hide_main_on_capture)
+        self.hide_main_checkbox.blockSignals(False)
 
     def save_hotkey_settings(self):
         """Save hotkey and app-level settings to config file."""
@@ -577,6 +614,7 @@ class MainWindow(QMainWindow):
 
             data['screenshot_hotkey'] = self.screenshot_hotkey
             data['text_separator_index'] = self.text_separator_combo.currentIndex()
+            data['hide_main_on_capture'] = self.hide_main_on_capture
 
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
@@ -671,12 +709,13 @@ class MainWindow(QMainWindow):
         
         # Precision setting
         self.precision_spinbox.setValue(settings.precision)
-        
-        # Map copy strategy: "all", "value_only", "unit_only"
-        strategy_map = {'all': 0, 'value_only': 1, 'unit_only': 2}
-        strategy_idx = strategy_map.get(settings.copy_strategy, 0)
-        self.copy_strategy_combo.setCurrentIndex(strategy_idx)
-        
+
+        # Sync Copy QToolButton sticky default action (M6.3).
+        default_action = self._copy_actions.get(
+            settings.copy_strategy, self._copy_actions["all"]
+        )
+        self.copy_button.setDefaultAction(default_action)
+
         self.log_text.appendPlainText("Post-process settings loaded.")
 
     def load_settings(self):
@@ -708,11 +747,11 @@ class MainWindow(QMainWindow):
         
         # Precision setting
         settings.precision = self.precision_spinbox.value()
-        
-        # Map copy strategy combo index
-        copy_strategies = {0: 'all', 1: 'value_only', 2: 'unit_only'}
-        settings.copy_strategy = copy_strategies.get(self.copy_strategy_combo.currentIndex(), 'all')
-        
+
+        # Copy strategy now lives on the Copy QToolButton; keep the previously-chosen
+        # value on current_settings so the on-disk config survives round-trips here.
+        settings.copy_strategy = self.current_settings.copy_strategy
+
         return settings
 
     def _sync_mode_dependent_ui(self):
@@ -757,8 +796,24 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_postprocess_changed(self):
-        """Handle any post-processing control change - update preview in real-time."""
-        self.update_postprocess_preview()
+        """Coalesce bursts of control changes into one preview refresh (200ms tail)."""
+        self._postprocess_debounce.start()
+
+    def _do_copy(self, strategy: str, action: QAction):
+        """Invoke copy with the chosen strategy and remember it as the sticky default."""
+        self.current_settings.copy_strategy = strategy
+        self.copy_to_clipboard()
+        self.copy_button.setDefaultAction(action)
+        try:
+            postprocess.save_config(self.current_settings)
+        except Exception as e:
+            self.log_text.appendPlainText(f"Failed to persist copy strategy: {e}")
+
+    @Slot(bool)
+    def _on_hide_main_toggled(self, checked: bool):
+        """Persist the hide-on-capture preference as soon as the user toggles it."""
+        self.hide_main_on_capture = checked
+        self.save_hotkey_settings()
 
     @Slot()
     def on_generate_postprocess(self):
