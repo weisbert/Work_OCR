@@ -39,25 +39,34 @@ class OCREngine:
         use_angle_cls: bool = True,
         logger: Optional[Any] = None,
         padding: int = 20,
+        max_threads: int = 2,
     ) -> None:
         self.lang = lang
         self.use_angle_cls = use_angle_cls
         self._logger = logger
         self._padding = padding
+        self._max_threads = max_threads
         self._ocr: Optional[RapidOCR] = None
         self._initialized = False
         self._init_seconds: Optional[float] = None
 
     def initialize(self) -> float:
-        """Initialize the PaddleOCR model once and return elapsed seconds."""
+        """Initialize the RapidOCR model once and return elapsed seconds."""
         if self._initialized and self._init_seconds is not None:
             return self._init_seconds
 
         start = time.perf_counter()
         try:
-            # RapidOCR initializes models automatically.
-            # It defaults to using CPU if GPU is not available or not specified.
-            self._ocr = RapidOCR()
+            # Cap ONNX intra-op threads so recognition doesn't stall the UI cursor.
+            # Older RapidOCR versions don't accept the kwarg — fall back to defaults.
+            try:
+                self._ocr = RapidOCR(intra_op_num_threads=self._max_threads)
+            except TypeError:
+                self._log_warning(
+                    "RapidOCR does not accept intra_op_num_threads kwarg; "
+                    "falling back to default thread count"
+                )
+                self._ocr = RapidOCR()
         except Exception as exc:
             raise OCREngineError(f"Failed to initialize RapidOCR: {exc}") from exc
 

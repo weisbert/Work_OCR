@@ -328,15 +328,31 @@ class MainWindow(QMainWindow):
         self._sync_mode_dependent_ui()
 
     def initialize_engines(self):
-        """Initialize backend modules."""
+        """Initialize backend modules and schedule an async warm-up."""
         self.log_text.appendPlainText("Initializing engines...")
         QApplication.processEvents()
         try:
             self.ocr_engine = ocr_engine.OCREngine()
             self.log_text.appendPlainText("Engines initialized successfully.")
+            # Warm up on the next event-loop tick so the window is responsive first.
+            QTimer.singleShot(100, self._warm_up_ocr_async)
         except Exception as e:
             self.log_text.appendPlainText(f"Error initializing engines: {e}")
             QMessageBox.critical(self, "Initialization Error", f"Failed to initialize engines: {e}")
+
+    def _warm_up_ocr_async(self):
+        """Run one dummy recognition so the first real screenshot doesn't stall the cursor."""
+        try:
+            import numpy as np
+            dummy = np.full((64, 64, 3), 255, dtype=np.uint8)
+            self.ocr_engine.initialize()
+            try:
+                self.ocr_engine.recognize(dummy)
+            except Exception:
+                pass  # Empty/blank result from a blank frame is expected.
+            self.log_text.appendPlainText("OCR warmed up.")
+        except Exception as e:
+            self.log_text.appendPlainText(f"OCR warm-up skipped: {e}")
 
     @Slot()
     def start_screenshot(self):
