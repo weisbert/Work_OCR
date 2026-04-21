@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QComboBox, QSplitter, QMessageBox,
     QGroupBox, QCheckBox, QLineEdit, QGridLayout, QSpinBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap, QGuiApplication
 
 # Import project modules
@@ -340,17 +340,29 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def start_screenshot(self):
-        """Hides the main window and shows the capture window."""
+        """Freeze-frame capture: grab the desktop first, then hide and overlay."""
         self.log_text.appendPlainText("Waiting for screenshot...")
-        self.hide()
-        # Give time for the main window to hide completely before showing the capture window.
-        QApplication.processEvents()
-        QThread.msleep(200) 
 
-        self.capture_window = capture.CaptureWindow()
-        self.capture_window.screenshot_completed.connect(self.on_screenshot_captured)
-        self.capture_window.screenshot_cancelled.connect(self.on_screenshot_cancelled)
-        self.capture_window.show()
+        # 1. Grab the full virtual desktop before any UI change so tooltips/cursor
+        #    artifacts that may appear while the main window hides don't land in the frame.
+        screen = QGuiApplication.primaryScreen()
+        vg = screen.virtualGeometry()
+        pixmap = screen.grabWindow(0, vg.x(), vg.y(), vg.width(), vg.height())
+
+        # 2. Hide main window (M6 will make this configurable).
+        self.hide()
+
+        # 3. Show overlay with the frozen pixmap after one event loop tick
+        #    so the hide() actually completes painting before the overlay appears.
+        def _show_overlay():
+            self.capture_window = capture.CaptureWindow(
+                background_pixmap=pixmap, virtual_geometry=vg
+            )
+            self.capture_window.screenshot_completed.connect(self.on_screenshot_captured)
+            self.capture_window.screenshot_cancelled.connect(self.on_screenshot_cancelled)
+            self.capture_window.show()
+
+        QTimer.singleShot(50, _show_overlay)
 
     @Slot()
     def on_screenshot_cancelled(self):

@@ -1,5 +1,6 @@
 
 import sys
+from typing import Optional
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtGui import QPainter, QPen, QColor, QGuiApplication, QPixmap
 from PySide6.QtCore import Qt, QRect, Signal
@@ -13,28 +14,33 @@ class CaptureWindow(QWidget):
     screenshot_completed = Signal(QPixmap)
     screenshot_cancelled = Signal()
 
-    def __init__(self):
+    def __init__(
+        self,
+        background_pixmap: Optional[QPixmap] = None,
+        virtual_geometry: Optional[QRect] = None,
+    ):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
 
-        # 获取主屏幕信息和虚拟几何
         self._screen = QGuiApplication.primaryScreen()
-        
-        # 使用虚拟几何设置窗口大小，支持多显示器
-        virtual_geometry = self._screen.virtualGeometry()
+        if virtual_geometry is None:
+            virtual_geometry = self._screen.virtualGeometry()
         self.setGeometry(virtual_geometry)
 
-        # 捕获整个虚拟桌面
-        self._background_pixmap = self._screen.grabWindow(
-            0,
-            virtual_geometry.x(),
-            virtual_geometry.y(),
-            virtual_geometry.width(),
-            virtual_geometry.height()
-        )
-        
+        # 用调用方预先抓好的冻屏 pixmap，避免主窗 hide 过程中的 tooltip 污染。
+        if background_pixmap is not None:
+            self._background_pixmap = background_pixmap
+        else:
+            self._background_pixmap = self._screen.grabWindow(
+                0,
+                virtual_geometry.x(),
+                virtual_geometry.y(),
+                virtual_geometry.width(),
+                virtual_geometry.height()
+            )
+
         self._is_selecting = False
         self._start_point = None
         self._end_point = None
